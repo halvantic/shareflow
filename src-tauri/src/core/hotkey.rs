@@ -1,0 +1,64 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use crate::input::InputEvent;
+
+/// Scancodes for common modifier/toggle keys.
+pub const SC_SCROLL_LOCK: u16 = 0x46;
+pub const SC_LCTRL: u16 = 0x1D;
+pub const SC_RCTRL: u16 = 0x11D; // Extended
+pub const SC_LALT: u16 = 0x38;
+pub const SC_RALT: u16 = 0x138;
+pub const SC_LSHIFT: u16 = 0x2A;
+pub const SC_RSHIFT: u16 = 0x36;
+
+/// Tracks currently pressed keys and detects hotkey combos.
+pub struct HotkeyDetector {
+    /// Set of scancodes currently held down.
+    pressed: Mutex<HashSet<u16>>,
+    /// The configured hotkey combo (set of scancodes that must all be pressed).
+    /// Default: just Scroll Lock.
+    combo: Mutex<Vec<u16>>,
+    /// Debounce: was the hotkey already fired for this press cycle?
+    fired: AtomicBool,
+}
+
+impl HotkeyDetector {
+    pub fn new() -> Self {
+        Self {
+            pressed: Mutex::new(HashSet::new()),
+            combo: Mutex::new(vec![SC_SCROLL_LOCK]),
+            fired: AtomicBool::new(false),
+        }
+    }
+
+    /// Set a custom hotkey combo (list of scancodes).
+    pub fn set_combo(&self, scancodes: Vec<u16>) {
+        *self.combo.lock().unwrap() = scancodes;
+    }
+
+    /// Process an input event. Returns true if the hotkey was just triggered.
+    pub fn process(&self, event: &InputEvent) -> bool {
+        if let InputEvent::Key(ke) = event {
+            let mut pressed = self.pressed.lock().unwrap();
+            if ke.pressed {
+                pressed.insert(ke.scancode);
+            } else {
+                pressed.remove(&ke.scancode);
+                // Reset fired state when any key in the combo is released.
+                self.fired.store(false, Ordering::SeqCst);
+                return false;
+            }
+
+            // Check if all keys in the combo are currently held.
+            let combo = self.combo.lock().unwrap();
+            if !combo.is_empty() && combo.iter().all(|sc| pressed.contains(sc)) {
+                if !self.fired.swap(true, Ordering::SeqCst) {
+                    return true; // Fire once per press cycle
+                }
+            }
+        }
+        false
+    }
+}
