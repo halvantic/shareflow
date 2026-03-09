@@ -199,12 +199,10 @@ unsafe extern "system" fn mouse_hook_proc(
     if code >= 0 && HOOK_ACTIVE.load(Ordering::SeqCst) {
         let data = &*(lparam.0 as *const MSLLHOOKSTRUCT);
 
-        // Skip our own synthetic events (warp, injection)
+        // Skip our own synthetic events (warp, injection) — let them pass
+        // through to the OS but don't send to engine
         if data.dwExtraInfo == SHAREFLOW_EXTRA_INFO {
-            if SUPPRESS.load(Ordering::SeqCst) {
-                return LRESULT(1); // Suppress warp events on controlling machine
-            }
-            return CallNextHookEx(None, code, wparam, lparam); // Pass through on controlled
+            return CallNextHookEx(None, code, wparam, lparam);
         }
 
         let suppress = SUPPRESS.load(Ordering::SeqCst);
@@ -315,11 +313,8 @@ unsafe extern "system" fn keyboard_hook_proc(
     if code >= 0 && HOOK_ACTIVE.load(Ordering::SeqCst) {
         let data = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
-        // Skip our own synthetic events (injection)
+        // Skip our own synthetic events — let them pass through but don't send to engine
         if data.dwExtraInfo == SHAREFLOW_EXTRA_INFO {
-            if SUPPRESS.load(Ordering::SeqCst) {
-                return LRESULT(1);
-            }
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
