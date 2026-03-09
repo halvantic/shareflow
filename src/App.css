@@ -89,12 +89,32 @@
   color: #e94560;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .header .status {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: #888;
+}
+
+.quit-btn {
+  background: transparent;
+  color: #888;
+  border: 1px solid #333;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.quit-btn:hover {
+  background: #f44336;
+  color: white;
+  border-color: #f44336;
 }
 
 .status-dot {

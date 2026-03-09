@@ -385,17 +385,26 @@ function App() {
       {/* Header */}
       <div className="header">
         <h1>ShareFlow</h1>
-        <div className="status">
-          <span
-            className={`status-dot ${
-              isRemote ? "remote" : peers.length > 0 ? "" : "offline"
-            }`}
-          />
-          {isRemote
-            ? "Controlling remote PC"
-            : peers.length > 0
-            ? `${peers.length} peer(s) connected`
-            : "No peers connected"}
+        <div className="header-right">
+          <div className="status">
+            <span
+              className={`status-dot ${
+                isRemote ? "remote" : peers.length > 0 ? "" : "offline"
+              }`}
+            />
+            {isRemote
+              ? "Controlling remote PC"
+              : peers.length > 0
+              ? `${peers.length} peer(s) connected`
+              : "No peers connected"}
+          </div>
+          <button
+            className="quit-btn"
+            onClick={() => invoke("quit_app")}
+            title="Quit ShareFlow"
+          >
+            Quit
+          </button>
         </div>
       </div>
 

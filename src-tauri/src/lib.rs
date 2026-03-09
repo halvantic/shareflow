@@ -261,6 +261,11 @@ fn set_hotkey(state: tauri::State<'_, AppState>, scancodes: Vec<u16>) -> Result<
 }
 
 #[tauri::command]
+fn quit_app() {
+    std::process::exit(0);
+}
+
+#[tauri::command]
 async fn send_file_to_peer(
     state: tauri::State<'_, AppState>,
     peer_id: String,
@@ -462,6 +467,7 @@ pub fn run() {
             set_neighbor,
             set_hotkey,
             send_file_to_peer,
+            quit_app,
         ])
         .setup(move |app| {
             let engine = engine.clone();
@@ -499,7 +505,6 @@ pub fn run() {
             // Start input capture and forwarding loop with hotkey detection.
             let engine_input = engine.clone();
             let hotkey_input = hotkey.clone();
-            #[cfg(target_os = "windows")]
             {
                 let (_capture, event_rx) = input::create_capture_with_channel();
                 if let Some(std_rx) = event_rx {

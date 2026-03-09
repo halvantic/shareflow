@@ -63,16 +63,7 @@ fn get_screens_windows() -> Vec<ScreenInfo> {
 
 #[cfg(target_os = "macos")]
 fn get_screens_macos() -> Vec<ScreenInfo> {
-    // TODO: Implement using CGDisplayBounds / NSScreen
-    // For now return a placeholder
-    vec![ScreenInfo {
-        id: "main".to_string(),
-        x: 0,
-        y: 0,
-        width: 1920,
-        height: 1080,
-        primary: true,
-    }]
+    crate::input::macos::get_screens_macos()
 }
 
 /// Detect if the cursor is at a screen boundary edge.

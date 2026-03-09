@@ -62,12 +62,11 @@ pub fn set_input_suppression(suppress: bool) {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = suppress;
-        // TODO: macOS suppression
+        macos::set_suppress(suppress);
     }
 }
 
-/// Create capture and return the event receiver channel (Windows-specific for now).
+/// Create capture and return the event receiver channel.
 #[cfg(target_os = "windows")]
 pub fn create_capture_with_channel() -> (
     windows::WindowsInputCapture,
@@ -78,4 +77,13 @@ pub fn create_capture_with_channel() -> (
     let _ = capture.start_capture(Box::new(|_| {}));
     let rx = capture.take_event_receiver();
     (capture, rx)
+}
+
+/// Create capture and return the event receiver channel (macOS).
+#[cfg(target_os = "macos")]
+pub fn create_capture_with_channel() -> (
+    macos::MacOSInputCapture,
+    Option<std::sync::mpsc::Receiver<InputEvent>>,
+) {
+    macos::MacOSInputCapture::new_with_channel()
 }
