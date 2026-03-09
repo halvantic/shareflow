@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -85,6 +86,7 @@ function App() {
     Map<string, DiscoveredPeer>
   >(new Map());
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [appVersion, setAppVersion] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
   const addToast = useCallback(
@@ -116,6 +118,7 @@ function App() {
   }, [logs]);
 
   useEffect(() => {
+    getVersion().then(setAppVersion);
     invoke<any>("get_config").then((cfg) => {
       setConfig(cfg);
       addLog(
@@ -384,7 +387,7 @@ function App() {
 
       {/* Header */}
       <div className="header">
-        <h1>ShareFlow <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
+        <h1>ShareFlow {appVersion && <span style={{ fontSize: 12, fontWeight: 400, color: '#888' }}>v{appVersion}</span>} <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
         <div className="header-right">
           <div className="status">
             <span

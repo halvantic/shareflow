@@ -173,7 +173,21 @@ impl Engine {
         *focus = FocusState::Remote(peer_id.to_string());
         drop(focus);
         crate::input::set_input_suppression(true);
-        crate::input::init_remote_mouse(entry_x, entry_y);
+
+        // Get remote screen bounds for mouse clamping
+        let peers = self.peers.lock().await;
+        let (rs_x, rs_y, rs_w, rs_h) = if let Some(peer) = peers.get(peer_id) {
+            if let Some(s) = peer.screens.first() {
+                (s.x, s.y, s.width, s.height)
+            } else {
+                (0, 0, 1920, 1080)
+            }
+        } else {
+            (0, 0, 1920, 1080)
+        };
+        drop(peers);
+
+        crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
         log::info!("Focus switched to remote peer: {}", peer_id);
         let _ = self
             .ui_events

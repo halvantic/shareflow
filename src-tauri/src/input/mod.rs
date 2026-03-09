@@ -67,16 +67,15 @@ pub fn set_input_suppression(suppress: bool) {
 }
 
 /// Initialize remote mouse control with the entry point on the remote screen.
-/// On Windows, this warps the cursor to screen center for delta tracking.
-/// On macOS, this sets the virtual position for delta accumulation.
-pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+/// `rs_*` parameters define the remote screen bounds for clamping.
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     #[cfg(target_os = "windows")]
     {
-        windows::init_remote_mouse(virtual_x, virtual_y);
+        windows::init_remote_mouse(virtual_x, virtual_y, rs_x, rs_y, rs_w, rs_h);
     }
     #[cfg(target_os = "macos")]
     {
-        macos::init_remote_mouse(virtual_x, virtual_y);
+        macos::init_remote_mouse(virtual_x, virtual_y, rs_x, rs_y, rs_w, rs_h);
     }
 }
 

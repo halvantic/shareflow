@@ -42,6 +42,12 @@ static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 static WARP_CENTER_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static WARP_CENTER_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Remote screen bounds for clamping virtual position.
+static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
+static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1080);
+
 pub struct WindowsInputCapture {
     thread_handle: Option<std::thread::JoinHandle<()>>,
     event_receiver: Option<std_mpsc::Receiver<InputEvent>>,
@@ -152,9 +158,13 @@ pub fn is_suppressing() -> bool {
 }
 
 /// Initialize remote mouse control: set virtual position and warp cursor to screen center.
-pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
     VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
+    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
+    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
+    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
+    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
     unsafe {
         let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
@@ -215,8 +225,19 @@ unsafe extern "system" fn mouse_hook_proc(
             let dy = data.pt.y - cy;
 
             if dx != 0 || dy != 0 {
-                let vx = VIRTUAL_X.fetch_add(dx, Ordering::SeqCst) + dx;
-                let vy = VIRTUAL_Y.fetch_add(dy, Ordering::SeqCst) + dy;
+                let mut vx = VIRTUAL_X.load(Ordering::SeqCst) + dx;
+                let mut vy = VIRTUAL_Y.load(Ordering::SeqCst) + dy;
+
+                // Clamp to remote screen bounds to prevent drift
+                let left = REMOTE_LEFT.load(Ordering::SeqCst);
+                let top = REMOTE_TOP.load(Ordering::SeqCst);
+                let right = REMOTE_RIGHT.load(Ordering::SeqCst);
+                let bottom = REMOTE_BOTTOM.load(Ordering::SeqCst);
+                vx = vx.clamp(left, right - 1);
+                vy = vy.clamp(top, bottom - 1);
+
+                VIRTUAL_X.store(vx, Ordering::SeqCst);
+                VIRTUAL_Y.store(vy, Ordering::SeqCst);
 
                 if let Some(tx) = EVENT_SENDER.get() {
                     let _ = tx.send(InputEvent::MouseMove(MouseMoveEvent {

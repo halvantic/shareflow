@@ -17,6 +17,12 @@ static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::n
 static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Remote screen bounds for clamping virtual position.
+static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
+static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1080);
+
 // CGEvent delta fields
 const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
 const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
@@ -26,9 +32,13 @@ pub fn set_suppress(suppress: bool) {
 }
 
 /// Initialize remote mouse control: set virtual position to the entry point on the remote screen.
-pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
     VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
+    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
+    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
+    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
+    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
 }
 
 // --- CoreGraphics FFI types and functions ---
@@ -157,6 +167,7 @@ extern "C" {
         wheel3: i32,
     ) -> CGEventRef;
 
+    fn CGEventCreate(source: *const c_void) -> CGEventRef;
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CFRelease(cf: *const c_void);
     fn CGWarpMouseCursorPosition(new_cursor_position: CGPoint) -> i32;
@@ -431,8 +442,20 @@ extern "C" fn event_tap_callback(
                     let dx = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_X) as i32;
                     let dy = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_Y) as i32;
                     if dx != 0 || dy != 0 {
-                        let vx = VIRTUAL_X.fetch_add(dx, Ordering::SeqCst) + dx;
-                        let vy = VIRTUAL_Y.fetch_add(dy, Ordering::SeqCst) + dy;
+                        let mut vx = VIRTUAL_X.load(Ordering::SeqCst) + dx;
+                        let mut vy = VIRTUAL_Y.load(Ordering::SeqCst) + dy;
+
+                        // Clamp to remote screen bounds
+                        let left = REMOTE_LEFT.load(Ordering::SeqCst);
+                        let top = REMOTE_TOP.load(Ordering::SeqCst);
+                        let right = REMOTE_RIGHT.load(Ordering::SeqCst);
+                        let bottom = REMOTE_BOTTOM.load(Ordering::SeqCst);
+                        vx = vx.clamp(left, right - 1);
+                        vy = vy.clamp(top, bottom - 1);
+
+                        VIRTUAL_X.store(vx, Ordering::SeqCst);
+                        VIRTUAL_Y.store(vy, Ordering::SeqCst);
+
                         let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
                             x: vx,
                             y: vy,
@@ -501,9 +524,10 @@ extern "C" fn event_tap_callback(
             KCG_EVENT_SCROLL_WHEEL => {
                 let dy = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1);
                 let dx = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_2);
+                // Normalize to Windows WHEEL_DELTA convention (120 per notch)
                 let _ = sender.send(InputEvent::MouseScroll(MouseScrollEvent {
-                    dx: dx as i32,
-                    dy: dy as i32,
+                    dx: dx as i32 * 120,
+                    dy: dy as i32 * 120,
                 }));
             }
 
@@ -715,12 +739,8 @@ impl InputInjector for MacOSInputInjector {
         pressed: bool,
     ) -> Result<(), String> {
         unsafe {
-            let dummy = CGEventCreateMouseEvent(
-                std::ptr::null(),
-                KCG_EVENT_MOUSE_MOVED,
-                CGPoint { x: 0.0, y: 0.0 },
-                0,
-            );
+            // Get actual current cursor position using a generic event
+            let dummy = CGEventCreate(std::ptr::null());
             let pos = if !dummy.is_null() {
                 let p = CGEventGetLocation(dummy);
                 CFRelease(dummy);
@@ -755,12 +775,15 @@ impl InputInjector for MacOSInputInjector {
 
     fn scroll(&self, dx: i32, dy: i32) -> Result<(), String> {
         unsafe {
+            // Convert from WHEEL_DELTA convention (120 per notch) to lines
+            let line_dy = if dy.abs() >= 120 { dy / 120 } else { dy.signum() };
+            let line_dx = if dx.abs() >= 120 { dx / 120 } else { dx.signum() };
             let event = CGEventCreateScrollWheelEvent2(
                 std::ptr::null(),
                 KCG_SCROLL_EVENT_UNIT_LINE,
                 2,
-                dy,
-                dx,
+                line_dy,
+                line_dx,
                 0,
             );
             if !event.is_null() {
