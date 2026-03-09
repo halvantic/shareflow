@@ -7,7 +7,7 @@ mod network;
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WindowEvent};
 use tokio::sync::mpsc;
 
 use crate::core::config::AppConfig;
@@ -495,6 +495,19 @@ pub fn run() {
             send_file_to_peer,
             quit_app,
         ])
+        // On Windows, hide the window to tray when minimized or closed
+        // instead of leaving it in the taskbar.
+        .on_window_event(|_window, _event| {
+            #[cfg(target_os = "windows")]
+            match _event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    // Prevent actual close — hide to tray instead
+                    api.prevent_close();
+                    let _ = _window.hide();
+                }
+                _ => {}
+            }
+        })
         .setup(move |app| {
             let engine = engine.clone();
             let app_handle = app.handle().clone();
