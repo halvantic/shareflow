@@ -114,6 +114,13 @@ async fn connect_to_peer_cmd(
                     match msg {
                         crate::core::protocol::Message::MouseMove(mv) => {
                             let _ = injector.move_mouse(mv.x, mv.y);
+                            // Check if the injected position hits a local edge for switching back.
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
                             let _ = injector.press_mouse_button(mb.button, mb.pressed);
