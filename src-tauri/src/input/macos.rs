@@ -37,6 +37,7 @@ const KCG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
 
 // CGEventSource state IDs.
 const KCG_EVENT_SOURCE_STATE_COMBINED_SESSION: i32 = 0;
+const KCG_EVENT_SOURCE_STATE_HID_SYSTEM: i32 = 1;
 
 pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
@@ -104,6 +105,7 @@ const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
 
 // CGEventTapLocation
 const KCG_HID_EVENT_TAP: u32 = 0;
+#[allow(dead_code)]
 const KCG_SESSION_EVENT_TAP: u32 = 1;
 // CGEventTapPlacement
 const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
@@ -727,13 +729,35 @@ pub struct MacOSInputInjector;
 
 impl MacOSInputInjector {
     pub fn new() -> Self {
+        // Verify accessibility permission is available for injection
+        let trusted = unsafe { AXIsProcessTrusted() };
+        if !trusted {
+            log::error!(
+                "Accessibility permission not granted — input injection (clicks, keys, scroll) \
+                 will NOT work. Go to System Settings > Privacy & Security > Accessibility \
+                 and add ShareFlow."
+            );
+        } else {
+            log::info!("Accessibility permission verified for input injection");
+        }
         Self
     }
 }
 
 /// Create a CGEventSource for injection.  Returns null on failure.
+/// Uses HIDSystemState so injected events appear to originate from hardware,
+/// which is required for reliable click/key/scroll injection on macOS.
 unsafe fn create_event_source() -> *mut c_void {
-    CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION)
+    let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_HID_SYSTEM);
+    if source.is_null() {
+        log::warn!("CGEventSourceCreate(HIDSystem) returned null, trying CombinedSession");
+        let fallback = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+        if fallback.is_null() {
+            log::error!("CGEventSourceCreate failed entirely — check Accessibility permissions");
+        }
+        return fallback;
+    }
+    source
 }
 
 impl InputInjector for MacOSInputInjector {
@@ -757,7 +781,7 @@ impl InputInjector for MacOSInputInjector {
             );
             if !move_event.is_null() {
                 CGEventSetIntegerValueField(move_event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_SESSION_EVENT_TAP, move_event);
+                CGEventPost(KCG_HID_EVENT_TAP, move_event);
                 CFRelease(move_event);
             }
             if !source.is_null() {
@@ -804,8 +828,14 @@ impl InputInjector for MacOSInputInjector {
                 if pressed {
                     CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
                 }
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                // For Other-type mouse buttons, explicitly set the button number field
+                if cg_button >= 2 {
+                    CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER, cg_button as i64);
+                }
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateMouseEvent returned null for type={} button={}", event_type, cg_button);
             }
             if !source.is_null() {
                 CFRelease(source);
@@ -830,8 +860,10 @@ impl InputInjector for MacOSInputInjector {
             );
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateScrollWheelEvent2 returned null");
             }
             if !source.is_null() {
                 CFRelease(source);
@@ -859,7 +891,7 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);

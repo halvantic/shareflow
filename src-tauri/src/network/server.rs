@@ -162,14 +162,20 @@ async fn handle_peer_session(
                 }
             }
             Message::MouseButton(mb) => {
-                let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
+                    log::error!("Mouse button injection failed: {}", e);
+                }
             }
             Message::MouseScroll(ms) => {
-                let _ = injector.scroll(ms.dx, ms.dy);
+                if let Err(e) = injector.scroll(ms.dx, ms.dy) {
+                    log::error!("Scroll injection failed: {}", e);
+                }
             }
             Message::Key(ke) => {
                 log::debug!("Received key: scancode=0x{:X} pressed={}", ke.scancode, ke.pressed);
-                let _ = injector.send_key(ke.scancode, ke.pressed);
+                if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
+                    log::error!("Key injection failed: {}", e);
+                }
             }
             Message::SwitchFocus {
                 target_id,

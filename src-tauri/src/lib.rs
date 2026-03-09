@@ -123,13 +123,19 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
-                            let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                            if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
+                                log::error!("Mouse button injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::MouseScroll(ms) => {
-                            let _ = injector.scroll(ms.dx, ms.dy);
+                            if let Err(e) = injector.scroll(ms.dx, ms.dy) {
+                                log::error!("Scroll injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::Key(ke) => {
-                            let _ = injector.send_key(ke.scancode, ke.pressed);
+                            if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
+                                log::error!("Key injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::SwitchFocus {
                             target_id,
