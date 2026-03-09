@@ -152,7 +152,6 @@ extern "C" {
     fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRun();
 
-    fn CGEventGetType(event: CGEventRef) -> u32;
     fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetFlags(event: CGEventRef) -> u64;
@@ -606,14 +605,12 @@ static mut TAP_REF: Option<CFMachPortRef> = None;
 
 pub struct MacOSInputCapture {
     capturing: bool,
-    event_rx: Option<std::sync::mpsc::Receiver<InputEvent>>,
 }
 
 impl MacOSInputCapture {
     pub fn new() -> Self {
         Self {
             capturing: false,
-            event_rx: None,
         }
     }
 
@@ -643,14 +640,9 @@ impl MacOSInputCapture {
         (
             Self {
                 capturing: true,
-                event_rx: None,
             },
             Some(rx),
         )
-    }
-
-    pub fn take_event_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<InputEvent>> {
-        self.event_rx.take()
     }
 }
 
