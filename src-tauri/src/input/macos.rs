@@ -10,10 +10,25 @@ use crate::core::protocol::{
 // --- Global state (mirrors Windows implementation pattern) ---
 
 static SUPPRESS: AtomicBool = AtomicBool::new(false);
+static INJECTING: AtomicBool = AtomicBool::new(false);
 static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::new();
+
+/// Virtual cursor position tracking for remote mouse control.
+static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+// CGEvent delta fields
+const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
+const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
 
 pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
+}
+
+/// Initialize remote mouse control: set virtual position to the entry point on the remote screen.
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+    VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
+    VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
 }
 
 // --- CoreGraphics FFI types and functions ---
@@ -385,12 +400,16 @@ extern "C" fn event_tap_callback(
 ) -> CGEventRef {
     // Re-enable tap if it was disabled by timeout
     if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT {
-        // We'd need the tap reference to re-enable. Store it in a global.
         unsafe {
             if let Some(tap) = TAP_REF.as_ref() {
                 CGEventTapEnable(*tap, true);
             }
         }
+        return event;
+    }
+
+    // Skip our own injected events to prevent feedback loops
+    if INJECTING.load(Ordering::SeqCst) {
         return event;
     }
 
@@ -407,6 +426,20 @@ extern "C" fn event_tap_callback(
             | KCG_EVENT_LEFT_MOUSE_DRAGGED
             | KCG_EVENT_RIGHT_MOUSE_DRAGGED
             | KCG_EVENT_OTHER_MOUSE_DRAGGED => {
+                if suppress {
+                    // Use raw deltas for accurate tracking when cursor is suppressed
+                    let dx = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_X) as i32;
+                    let dy = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_Y) as i32;
+                    if dx != 0 || dy != 0 {
+                        let vx = VIRTUAL_X.fetch_add(dx, Ordering::SeqCst) + dx;
+                        let vy = VIRTUAL_Y.fetch_add(dy, Ordering::SeqCst) + dy;
+                        let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
+                            x: vx,
+                            y: vy,
+                        }));
+                    }
+                    return std::ptr::null_mut();
+                }
                 let loc = CGEventGetLocation(event);
                 let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
                     x: loc.x as i32,
@@ -682,10 +715,6 @@ impl InputInjector for MacOSInputInjector {
         pressed: bool,
     ) -> Result<(), String> {
         unsafe {
-            // Get current cursor position for the event
-            // We create a mouse event at position (0,0) with move type to get position,
-            // or just use CGWarp position. Actually, for button events we need current pos.
-            // Use a dummy event to read position.
             let dummy = CGEventCreateMouseEvent(
                 std::ptr::null(),
                 KCG_EVENT_MOUSE_MOVED,
@@ -715,7 +744,9 @@ impl InputInjector for MacOSInputInjector {
 
             let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, pos, cg_button);
             if !event.is_null() {
+                INJECTING.store(true, Ordering::SeqCst);
                 CGEventPost(KCG_HID_EVENT_TAP, event);
+                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
         }
@@ -727,13 +758,15 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateScrollWheelEvent2(
                 std::ptr::null(),
                 KCG_SCROLL_EVENT_UNIT_LINE,
-                2, // wheel_count: 2 axes
+                2,
                 dy,
                 dx,
                 0,
             );
             if !event.is_null() {
+                INJECTING.store(true, Ordering::SeqCst);
                 CGEventPost(KCG_HID_EVENT_TAP, event);
+                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
         }
@@ -752,7 +785,9 @@ impl InputInjector for MacOSInputInjector {
         unsafe {
             let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
             if !event.is_null() {
+                INJECTING.store(true, Ordering::SeqCst);
                 CGEventPost(KCG_HID_EVENT_TAP, event);
+                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
         }

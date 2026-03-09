@@ -51,12 +51,19 @@ pub struct TrustedPeer {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        // Platform-appropriate default hotkey
+        let default_hotkey = if cfg!(target_os = "macos") {
+            vec![0x1D, 0x38, 0x1F] // Ctrl+Alt+S (Mac keyboards lack Scroll Lock)
+        } else {
+            vec![0x46] // Scroll Lock
+        };
+
         Self {
             machine_name: hostname(),
             peer_id: uuid::Uuid::new_v4().to_string(),
             port: 24800,
             neighbors: Vec::new(),
-            switch_hotkey: None,
+            switch_hotkey: Some(default_hotkey),
             trusted_peers: Vec::new(),
         }
     }
@@ -67,7 +74,31 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
         match std::fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Ok(contents) => {
+                let mut config: Self = serde_json::from_str(&contents).unwrap_or_default();
+                let mut changed = false;
+
+                // Fix placeholder hostnames from previous versions
+                if config.machine_name == "Unknown-PC" || config.machine_name.is_empty() {
+                    config.machine_name = hostname();
+                    changed = true;
+                }
+
+                // Set platform-appropriate default hotkey if none configured
+                if config.switch_hotkey.is_none() {
+                    if cfg!(target_os = "macos") {
+                        config.switch_hotkey = Some(vec![0x1D, 0x38, 0x1F]);
+                    } else {
+                        config.switch_hotkey = Some(vec![0x46]);
+                    }
+                    changed = true;
+                }
+
+                if changed {
+                    config.save();
+                }
+                config
+            }
             Err(_) => {
                 let config = Self::default();
                 config.save();
@@ -127,8 +158,25 @@ fn hostname() -> String {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("HOST"))
-            .unwrap_or_else(|_| "Unknown-PC".into())
+        if let Ok(h) = std::env::var("HOSTNAME") {
+            if !h.is_empty() {
+                return h;
+            }
+        }
+        if let Ok(h) = std::env::var("HOST") {
+            if !h.is_empty() {
+                return h;
+            }
+        }
+        // Fallback: run `hostname` command (reliable on macOS GUI apps where env vars aren't set)
+        if let Ok(output) = std::process::Command::new("hostname").output() {
+            if let Ok(name) = String::from_utf8(output.stdout) {
+                let trimmed = name.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+        "Unknown-PC".into()
     }
 }

@@ -66,6 +66,20 @@ pub fn set_input_suppression(suppress: bool) {
     }
 }
 
+/// Initialize remote mouse control with the entry point on the remote screen.
+/// On Windows, this warps the cursor to screen center for delta tracking.
+/// On macOS, this sets the virtual position for delta accumulation.
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+    #[cfg(target_os = "windows")]
+    {
+        windows::init_remote_mouse(virtual_x, virtual_y);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::init_remote_mouse(virtual_x, virtual_y);
+    }
+}
+
 /// Create capture and return the event receiver channel.
 #[cfg(target_os = "windows")]
 pub fn create_capture_with_channel() -> (

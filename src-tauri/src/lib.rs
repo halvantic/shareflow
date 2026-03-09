@@ -209,7 +209,7 @@ async fn switch_focus_to(
     peer.sender.send(msg).await.map_err(|e| e.to_string())?;
     drop(peers);
 
-    state.engine.switch_to_remote(&peer_id).await;
+    state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
     Ok(())
 }
 
@@ -235,14 +235,27 @@ async fn set_neighbor(
     };
 
     let mut config = state.engine.config.lock().await;
-    config
-        .neighbors
-        .retain(|n| !(n.edge == screen_edge && n.screen_id == screen_id));
-    config.neighbors.push(crate::core::config::Neighbor {
-        peer_id,
-        edge: screen_edge,
-        screen_id,
+
+    // Toggle: if the exact same mapping exists, remove it (deselect)
+    let already_set = config.neighbors.iter().any(|n| {
+        n.peer_id == peer_id && n.edge == screen_edge && n.screen_id == screen_id
     });
+
+    if already_set {
+        config.neighbors.retain(|n| {
+            !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id == screen_id)
+        });
+    } else {
+        // Remove any other mapping for this edge+screen, then add new
+        config
+            .neighbors
+            .retain(|n| !(n.edge == screen_edge && n.screen_id == screen_id));
+        config.neighbors.push(crate::core::config::Neighbor {
+            peer_id,
+            edge: screen_edge,
+            screen_id,
+        });
+    }
     config.save();
     Ok(())
 }
@@ -350,7 +363,7 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
                                     };
                                     let _ = peer.sender.send(msg).await;
                                     drop(peers);
-                                    engine.switch_to_remote(&peer_id).await;
+                                    engine.switch_to_remote(&peer_id, ex, ey).await;
                                 }
                             }
                             FocusState::Remote(_) => {

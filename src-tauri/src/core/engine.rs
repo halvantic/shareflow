@@ -87,9 +87,10 @@ impl Engine {
                     let result = self.check_edge_switch(mv.x, mv.y).await;
                     if result.is_some() {
                         drop(focus);
-                        // We're switching — enable suppression
-                        if let Some((ref peer_id, _)) = result {
-                            self.switch_to_remote(peer_id).await;
+                        if let Some((ref peer_id, ref msg)) = result {
+                            if let Message::SwitchFocus { entry_x, entry_y, .. } = msg {
+                                self.switch_to_remote(peer_id, *entry_x, *entry_y).await;
+                            }
                         }
                     }
                     return result;
@@ -166,11 +167,13 @@ impl Engine {
     }
 
     /// Switch focus to a remote peer — starts suppressing local input.
-    pub async fn switch_to_remote(&self, peer_id: &str) {
+    /// `entry_x`/`entry_y` is the cursor entry point on the remote screen.
+    pub async fn switch_to_remote(&self, peer_id: &str, entry_x: i32, entry_y: i32) {
         let mut focus = self.focus.lock().await;
         *focus = FocusState::Remote(peer_id.to_string());
         drop(focus);
         crate::input::set_input_suppression(true);
+        crate::input::init_remote_mouse(entry_x, entry_y);
         log::info!("Focus switched to remote peer: {}", peer_id);
         let _ = self
             .ui_events

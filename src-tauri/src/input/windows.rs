@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT,
@@ -32,6 +32,15 @@ static SUPPRESS: AtomicBool = AtomicBool::new(false);
 static EVENT_SENDER: OnceLock<std_mpsc::Sender<InputEvent>> = OnceLock::new();
 /// Thread ID of the hook thread, needed to post WM_QUIT to stop it.
 static HOOK_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Marker value set in dwExtraInfo to identify our own synthetic events.
+const SHAREFLOW_EXTRA_INFO: usize = 0x53464C57;
+
+/// Virtual cursor position tracking for warp-to-center remote mouse control.
+static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static WARP_CENTER_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static WARP_CENTER_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 pub struct WindowsInputCapture {
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -142,6 +151,46 @@ pub fn is_suppressing() -> bool {
     SUPPRESS.load(Ordering::SeqCst)
 }
 
+/// Initialize remote mouse control: set virtual position and warp cursor to screen center.
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32) {
+    VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
+    VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
+    unsafe {
+        let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let cx = virt_x + screen_w / 2;
+        let cy = virt_y + screen_h / 2;
+        WARP_CENTER_X.store(cx, Ordering::SeqCst);
+        WARP_CENTER_Y.store(cy, Ordering::SeqCst);
+        warp_cursor_to_center(cx, cy);
+    }
+}
+
+unsafe fn warp_cursor_to_center(cx: i32, cy: i32) {
+    let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN) as f64;
+    let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN) as f64;
+    let virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    let virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let abs_x = (((cx - virt_x) as f64 / screen_w) * 65535.0) as i32;
+    let abs_y = (((cy - virt_y) as f64 / screen_h) * 65535.0) as i32;
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: abs_x,
+                dy: abs_y,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                time: 0,
+                dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+            },
+        },
+    };
+    SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+}
+
 unsafe extern "system" fn mouse_hook_proc(
     code: i32,
     wparam: WPARAM,
@@ -149,6 +198,40 @@ unsafe extern "system" fn mouse_hook_proc(
 ) -> LRESULT {
     if code >= 0 && HOOK_ACTIVE.load(Ordering::SeqCst) {
         let data = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+
+        // Skip our own synthetic events (warp, injection)
+        if data.dwExtraInfo == SHAREFLOW_EXTRA_INFO {
+            if SUPPRESS.load(Ordering::SeqCst) {
+                return LRESULT(1); // Suppress warp events on controlling machine
+            }
+            return CallNextHookEx(None, code, wparam, lparam); // Pass through on controlled
+        }
+
+        let suppress = SUPPRESS.load(Ordering::SeqCst);
+
+        // Warp-to-center mouse tracking when controlling remote machine
+        if suppress && wparam.0 as u32 == WM_MOUSEMOVE {
+            let cx = WARP_CENTER_X.load(Ordering::SeqCst);
+            let cy = WARP_CENTER_Y.load(Ordering::SeqCst);
+            let dx = data.pt.x - cx;
+            let dy = data.pt.y - cy;
+
+            if dx != 0 || dy != 0 {
+                let vx = VIRTUAL_X.fetch_add(dx, Ordering::SeqCst) + dx;
+                let vy = VIRTUAL_Y.fetch_add(dy, Ordering::SeqCst) + dy;
+
+                if let Some(tx) = EVENT_SENDER.get() {
+                    let _ = tx.send(InputEvent::MouseMove(MouseMoveEvent {
+                        x: vx,
+                        y: vy,
+                    }));
+                }
+
+                warp_cursor_to_center(cx, cy);
+            }
+
+            return LRESULT(1);
+        }
 
         let event = match wparam.0 as u32 {
             WM_MOUSEMOVE => Some(InputEvent::MouseMove(MouseMoveEvent {
@@ -211,13 +294,11 @@ unsafe extern "system" fn mouse_hook_proc(
         };
 
         if let Some(event) = event {
-            // Send to async runtime via channel.
             if let Some(tx) = EVENT_SENDER.get() {
                 let _ = tx.send(event);
             }
 
-            // Suppress if active — don't pass to local OS.
-            if SUPPRESS.load(Ordering::SeqCst) {
+            if suppress {
                 return LRESULT(1);
             }
         }
@@ -233,10 +314,26 @@ unsafe extern "system" fn keyboard_hook_proc(
 ) -> LRESULT {
     if code >= 0 && HOOK_ACTIVE.load(Ordering::SeqCst) {
         let data = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+
+        // Skip our own synthetic events (injection)
+        if data.dwExtraInfo == SHAREFLOW_EXTRA_INFO {
+            if SUPPRESS.load(Ordering::SeqCst) {
+                return LRESULT(1);
+            }
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
         let pressed = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
 
+        // Handle extended scancodes (arrow keys, Windows key, Right Ctrl/Alt, etc.)
+        let mut scancode = data.scanCode as u16;
+        if (data.flags.0 & 1) != 0 {
+            // LLKHF_EXTENDED flag — set bit 8 for our protocol
+            scancode |= 0x100;
+        }
+
         let event = InputEvent::Key(KeyEvent {
-            scancode: data.scanCode as u16,
+            scancode,
             pressed,
         });
 
@@ -285,7 +382,7 @@ impl InputInjector for WindowsInputInjector {
                             | MOUSEEVENTF_ABSOLUTE
                             | MOUSEEVENTF_VIRTUALDESK,
                         time: 0,
-                        dwExtraInfo: 0,
+                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
                     },
                 },
             };
@@ -324,7 +421,7 @@ impl InputInjector for WindowsInputInjector {
                         mouseData: mouse_data,
                         dwFlags: flags,
                         time: 0,
-                        dwExtraInfo: 0,
+                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
                     },
                 },
             };
@@ -344,7 +441,7 @@ impl InputInjector for WindowsInputInjector {
                         mouseData: dy as u32,
                         dwFlags: MOUSEEVENTF_WHEEL,
                         time: 0,
-                        dwExtraInfo: 0,
+                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
                     },
                 },
             };
@@ -359,16 +456,24 @@ impl InputInjector for WindowsInputInjector {
             flags |= KEYEVENTF_KEYUP;
         }
 
+        // Handle extended scancodes (bit 8 set = extended key)
+        let actual_scan = if scancode > 0xFF {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+            scancode & 0xFF
+        } else {
+            scancode
+        };
+
         unsafe {
             let input = INPUT {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
                     ki: KEYBDINPUT {
                         wVk: Default::default(),
-                        wScan: scancode,
+                        wScan: actual_scan,
                         dwFlags: flags,
                         time: 0,
-                        dwExtraInfo: 0,
+                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
                     },
                 },
             };

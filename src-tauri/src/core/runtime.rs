@@ -58,7 +58,7 @@ async fn handle_hotkey_toggle(engine: &Engine) {
                 };
                 let _ = peer.sender.send(msg).await;
                 drop(peers);
-                engine.switch_to_remote(&peer_id).await;
+                engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
                 log::info!("Hotkey: switched to remote peer {}", peer_id);
             } else {
                 log::info!("Hotkey: no peers connected, staying local");

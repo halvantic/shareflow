@@ -384,7 +384,7 @@ function App() {
 
       {/* Header */}
       <div className="header">
-        <h1>ShareFlow</h1>
+        <h1>ShareFlow <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
         <div className="header-right">
           <div className="status">
             <span
