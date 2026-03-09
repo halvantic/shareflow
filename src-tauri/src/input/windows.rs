@@ -11,12 +11,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
-    WM_XBUTTONUP,
+    CallNextHookEx, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
+    SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::{InputCapture, InputEvent, InputInjector};
@@ -153,6 +153,7 @@ pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
 }
 
+#[allow(dead_code)]
 pub fn is_suppressing() -> bool {
     SUPPRESS.load(Ordering::SeqCst)
 }
@@ -179,26 +180,10 @@ pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, r
 }
 
 unsafe fn warp_cursor_to_center(cx: i32, cy: i32) {
-    let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN) as f64;
-    let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN) as f64;
-    let virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let abs_x = (((cx - virt_x) as f64 / screen_w) * 65535.0) as i32;
-    let abs_y = (((cy - virt_y) as f64 / screen_h) * 65535.0) as i32;
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: abs_x,
-                dy: abs_y,
-                mouseData: 0,
-                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                time: 0,
-                dwExtraInfo: SHAREFLOW_EXTRA_INFO,
-            },
-        },
-    };
-    SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    // SetCursorPos uses exact pixel coordinates — no rounding errors.
+    // Unlike SendInput with MOUSEEVENTF_ABSOLUTE (which normalizes to 0-65535
+    // and can land 1px off), SetCursorPos is pixel-perfect.
+    let _ = SetCursorPos(cx, cy);
 }
 
 unsafe extern "system" fn mouse_hook_proc(

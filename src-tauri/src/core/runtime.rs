@@ -25,6 +25,9 @@ pub async fn start_input_loop(
         }
 
         if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
+            if matches!(&msg, crate::core::protocol::Message::Key(_)) {
+                log::debug!("Forwarding key event to peer {}", peer_id);
+            }
             if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
                 log::warn!("Failed to forward input: {}", e);
                 engine.switch_to_local().await;

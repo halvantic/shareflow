@@ -5,12 +5,19 @@ use std::sync::Mutex;
 use crate::input::InputEvent;
 
 /// Scancodes for common modifier/toggle keys.
+#[allow(dead_code)]
 pub const SC_SCROLL_LOCK: u16 = 0x46;
+#[allow(dead_code)]
 pub const SC_LCTRL: u16 = 0x1D;
+#[allow(dead_code)]
 pub const SC_RCTRL: u16 = 0x11D; // Extended
+#[allow(dead_code)]
 pub const SC_LALT: u16 = 0x38;
+#[allow(dead_code)]
 pub const SC_RALT: u16 = 0x138;
+#[allow(dead_code)]
 pub const SC_LSHIFT: u16 = 0x2A;
+#[allow(dead_code)]
 pub const SC_RSHIFT: u16 = 0x36;
 
 /// Tracks currently pressed keys and detects hotkey combos.

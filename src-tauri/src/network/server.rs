@@ -161,6 +161,7 @@ async fn handle_peer_session(
                 let _ = injector.scroll(ms.dx, ms.dy);
             }
             Message::Key(ke) => {
+                log::debug!("Received key: scancode=0x{:X} pressed={}", ke.scancode, ke.pressed);
                 let _ = injector.send_key(ke.scancode, ke.pressed);
             }
             Message::SwitchFocus {

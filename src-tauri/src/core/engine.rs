@@ -38,6 +38,7 @@ pub struct Engine {
 /// Events pushed to the frontend UI.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum UiEvent {
     FocusChanged { state: FocusState },
     PeerConnected { id: String, name: String },

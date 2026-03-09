@@ -93,6 +93,7 @@ const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
 
 // CGEventTapLocation
 const KCG_HID_EVENT_TAP: u32 = 0;
+const KCG_SESSION_EVENT_TAP: u32 = 1;
 // CGEventTapPlacement
 const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
 // CGEventTapOptions
@@ -765,7 +766,7 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, pos, cg_button);
             if !event.is_null() {
                 INJECTING.store(true, Ordering::SeqCst);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
@@ -788,7 +789,7 @@ impl InputInjector for MacOSInputInjector {
             );
             if !event.is_null() {
                 INJECTING.store(true, Ordering::SeqCst);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
@@ -805,13 +806,22 @@ impl InputInjector for MacOSInputInjector {
             }
         };
 
+        log::debug!(
+            "Injecting key: scancode=0x{:X} mac_vk=0x{:X} pressed={}",
+            scancode, mac_vk, pressed
+        );
+
         unsafe {
             let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
             if !event.is_null() {
+                // Post to session tap (not HID tap) to avoid interference
+                // with our active event tap installed at HID level.
                 INJECTING.store(true, Ordering::SeqCst);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);
             }
         }
         Ok(())

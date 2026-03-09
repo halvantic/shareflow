@@ -7,6 +7,7 @@ pub mod macos;
 use crate::core::protocol::{KeyEvent, MouseButton, MouseButtonEvent, MouseMoveEvent, MouseScrollEvent};
 
 /// Trait for capturing input events from the local machine.
+#[allow(dead_code)]
 pub trait InputCapture: Send + 'static {
     fn start_capture(&mut self, callback: Box<dyn Fn(InputEvent) + Send>) -> Result<(), String>;
     fn stop_capture(&mut self) -> Result<(), String>;
@@ -31,6 +32,7 @@ pub enum InputEvent {
 }
 
 /// Create platform-specific input capture.
+#[allow(dead_code)]
 pub fn create_capture() -> Box<dyn InputCapture> {
     #[cfg(target_os = "windows")]
     {

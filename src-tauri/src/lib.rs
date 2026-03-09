@@ -391,7 +391,7 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
 
     // Spawn task to update tray menu status text when focus changes.
     let app_handle2 = app_handle.clone();
-    let status_id = status.id().clone();
+    let _status_id = status.id().clone();
     tauri::async_runtime::spawn(async move {
         let mut last_text = String::new();
         loop {
