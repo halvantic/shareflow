@@ -35,6 +35,9 @@ const SHAREFLOW_EVENT_MARKER: i64 = 0x53464C57; // "SFLW"
 // Click state field — macOS apps ignore clicks with count=0.
 const KCG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
 
+// CGEventSource state IDs.
+const KCG_EVENT_SOURCE_STATE_COMBINED_SESSION: i32 = 0;
+
 pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
 }
@@ -179,6 +182,7 @@ extern "C" {
     fn CGEventCreate(source: *const c_void) -> CGEventRef;
     fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
     fn CGEventPost(tap: u32, event: CGEventRef);
+    fn CGEventSourceCreate(state_id: i32) -> *mut c_void;
     fn CFRelease(cf: *const c_void);
     fn CGWarpMouseCursorPosition(new_cursor_position: CGPoint) -> i32;
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
@@ -735,6 +739,11 @@ impl MacOSInputInjector {
     }
 }
 
+/// Create a CGEventSource for injection.  Returns null on failure.
+unsafe fn create_event_source() -> *mut c_void {
+    CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION)
+}
+
 impl InputInjector for MacOSInputInjector {
     fn move_mouse(&self, x: i32, y: i32) -> Result<(), String> {
         unsafe {
@@ -743,6 +752,25 @@ impl InputInjector for MacOSInputInjector {
                 y: y as f64,
             };
             CGWarpMouseCursorPosition(point);
+
+            // Post a mouse-moved event to re-sync the event stream after warp.
+            // Without this, macOS dissociates cursor and event state, causing
+            // subsequent click/key events to silently fail.
+            let source = create_event_source();
+            let move_event = CGEventCreateMouseEvent(
+                source,
+                KCG_EVENT_MOUSE_MOVED,
+                point,
+                0,
+            );
+            if !move_event.is_null() {
+                CGEventSetIntegerValueField(move_event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_SESSION_EVENT_TAP, move_event);
+                CFRelease(move_event);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
         }
         Ok(())
     }
@@ -754,7 +782,8 @@ impl InputInjector for MacOSInputInjector {
     ) -> Result<(), String> {
         unsafe {
             // Get actual current cursor position using a generic event
-            let dummy = CGEventCreate(std::ptr::null());
+            let source = create_event_source();
+            let dummy = CGEventCreate(source);
             let pos = if !dummy.is_null() {
                 let p = CGEventGetLocation(dummy);
                 CFRelease(dummy);
@@ -776,17 +805,18 @@ impl InputInjector for MacOSInputInjector {
                 (MouseButton::Button5, false) => (KCG_EVENT_OTHER_MOUSE_UP, 4),
             };
 
-            let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, pos, cg_button);
+            let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 // Set click count to 1 — some macOS apps ignore clicks with count=0
                 if pressed {
                     CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
                 }
-                // Post at HID level so events go through the full input pipeline.
-                // The marker field prevents our event tap from re-capturing them.
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 CFRelease(event);
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())
@@ -797,8 +827,9 @@ impl InputInjector for MacOSInputInjector {
             // Convert from WHEEL_DELTA convention (120 per notch) to lines
             let line_dy = if dy.abs() >= 120 { dy / 120 } else { dy.signum() };
             let line_dx = if dx.abs() >= 120 { dx / 120 } else { dx.signum() };
+            let source = create_event_source();
             let event = CGEventCreateScrollWheelEvent2(
-                std::ptr::null(),
+                source,
                 KCG_SCROLL_EVENT_UNIT_LINE,
                 2,
                 line_dy,
@@ -807,8 +838,11 @@ impl InputInjector for MacOSInputInjector {
             );
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 CFRelease(event);
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())
@@ -829,13 +863,17 @@ impl InputInjector for MacOSInputInjector {
         );
 
         unsafe {
-            let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
+            let source = create_event_source();
+            let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())
