@@ -783,7 +783,9 @@ impl InputInjector for MacOSInputInjector {
                 if pressed {
                     CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
                 }
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                // Post at HID level so events go through the full input pipeline.
+                // The marker field prevents our event tap from re-capturing them.
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             }
         }
@@ -805,7 +807,7 @@ impl InputInjector for MacOSInputInjector {
             );
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             }
         }
@@ -830,7 +832,7 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);
