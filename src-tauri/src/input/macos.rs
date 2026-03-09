@@ -10,7 +10,6 @@ use crate::core::protocol::{
 // --- Global state (mirrors Windows implementation pattern) ---
 
 static SUPPRESS: AtomicBool = AtomicBool::new(false);
-static INJECTING: AtomicBool = AtomicBool::new(false);
 static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::new();
 
 /// Virtual cursor position tracking for remote mouse control.
@@ -26,6 +25,15 @@ static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 // CGEvent delta fields
 const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
 const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
+
+// Field to stamp on injected events so the event tap can identify them.
+// Unlike an AtomicBool flag, this travels WITH the event through the async
+// CGEventPost pipeline, eliminating the race condition.
+const KCG_EVENT_SOURCE_USER_DATA: u32 = 42;
+const SHAREFLOW_EVENT_MARKER: i64 = 0x53464C57; // "SFLW"
+
+// Click state field — macOS apps ignore clicks with count=0.
+const KCG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
 
 pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
@@ -169,6 +177,7 @@ extern "C" {
     ) -> CGEventRef;
 
     fn CGEventCreate(source: *const c_void) -> CGEventRef;
+    fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CFRelease(cf: *const c_void);
     fn CGWarpMouseCursorPosition(new_cursor_position: CGPoint) -> i32;
@@ -420,9 +429,13 @@ extern "C" fn event_tap_callback(
         return event;
     }
 
-    // Skip our own injected events to prevent feedback loops
-    if INJECTING.load(Ordering::SeqCst) {
-        return event;
+    // Skip our own injected events — identified by a marker field value
+    // stamped on the event itself. This is race-free unlike an AtomicBool
+    // flag, because CGEventPost is asynchronous.
+    unsafe {
+        if CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA) == SHAREFLOW_EVENT_MARKER {
+            return event;
+        }
     }
 
     let sender = match EVENT_SENDER.get() {
@@ -765,9 +778,12 @@ impl InputInjector for MacOSInputInjector {
 
             let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, pos, cg_button);
             if !event.is_null() {
-                INJECTING.store(true, Ordering::SeqCst);
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                // Set click count to 1 — some macOS apps ignore clicks with count=0
+                if pressed {
+                    CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
+                }
                 CGEventPost(KCG_SESSION_EVENT_TAP, event);
-                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
         }
@@ -788,9 +804,8 @@ impl InputInjector for MacOSInputInjector {
                 0,
             );
             if !event.is_null() {
-                INJECTING.store(true, Ordering::SeqCst);
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 CGEventPost(KCG_SESSION_EVENT_TAP, event);
-                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             }
         }
@@ -814,11 +829,8 @@ impl InputInjector for MacOSInputInjector {
         unsafe {
             let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
             if !event.is_null() {
-                // Post to session tap (not HID tap) to avoid interference
-                // with our active event tap installed at HID level.
-                INJECTING.store(true, Ordering::SeqCst);
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 CGEventPost(KCG_SESSION_EVENT_TAP, event);
-                INJECTING.store(false, Ordering::SeqCst);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);

@@ -36,6 +36,11 @@ static HOOK_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 /// Marker value set in dwExtraInfo to identify our own synthetic events.
 const SHAREFLOW_EXTRA_INFO: usize = 0x53464C57;
 
+/// Track whether the Win key was pressed while suppressing, so we eat the
+/// matching key-up even if suppress turns off between down and up — a bare
+/// Win key-up reaching the shell opens the Start Menu.
+static WIN_KEY_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
 /// Virtual cursor position tracking for warp-to-center remote mouse control.
 static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -117,6 +122,7 @@ impl InputCapture for WindowsInputCapture {
     fn stop_capture(&mut self) -> Result<(), String> {
         HOOK_ACTIVE.store(false, Ordering::SeqCst);
         SUPPRESS.store(false, Ordering::SeqCst);
+        WIN_KEY_SUPPRESSED.store(false, Ordering::SeqCst);
 
         // Post WM_QUIT to the hook thread to break its message loop.
         let tid = HOOK_THREAD_ID.load(Ordering::SeqCst);
@@ -331,6 +337,37 @@ unsafe extern "system" fn keyboard_hook_proc(
         if (data.flags.0 & 1) != 0 {
             // LLKHF_EXTENDED flag — set bit 8 for our protocol
             scancode |= 0x100;
+        }
+
+        // Win key (VK_LWIN=0x5B / VK_RWIN=0x5C) — must suppress both down AND
+        // up to prevent the shell from opening the Start Menu.  Track across
+        // suppress-mode transitions so a key-up after suppress turns off is
+        // still eaten if the matching key-down was suppressed.
+        let is_win_key = data.vkCode == 0x5B || data.vkCode == 0x5C;
+        if is_win_key {
+            if SUPPRESS.load(Ordering::SeqCst) {
+                if pressed {
+                    WIN_KEY_SUPPRESSED.store(true, Ordering::SeqCst);
+                }
+                // Always forward the event to the engine, then suppress
+                let event = InputEvent::Key(KeyEvent { scancode, pressed });
+                if let Some(tx) = EVENT_SENDER.get() {
+                    let _ = tx.send(event);
+                }
+                if !pressed {
+                    WIN_KEY_SUPPRESSED.store(false, Ordering::SeqCst);
+                }
+                return LRESULT(1);
+            } else if !pressed && WIN_KEY_SUPPRESSED.load(Ordering::SeqCst) {
+                // Suppress turned off between Win-down and Win-up — still
+                // eat the up so the shell doesn't see a bare key-up.
+                WIN_KEY_SUPPRESSED.store(false, Ordering::SeqCst);
+                let event = InputEvent::Key(KeyEvent { scancode, pressed });
+                if let Some(tx) = EVENT_SENDER.get() {
+                    let _ = tx.send(event);
+                }
+                return LRESULT(1);
+            }
         }
 
         let event = InputEvent::Key(KeyEvent {
