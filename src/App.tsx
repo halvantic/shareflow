@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
@@ -237,18 +236,10 @@ function App() {
       }
     });
 
-    // Minimize to tray on close
-    const appWindow = getCurrentWindow();
-    const unlistenClose = appWindow.onCloseRequested(async (e) => {
-      e.preventDefault();
-      await appWindow.hide();
-    });
-
     return () => {
       clearInterval(interval);
       clearInterval(cleanupInterval);
       unlisten.then((f) => f());
-      unlistenClose.then((f) => f());
     };
   }, [addLog, addToast]);
 

@@ -51,12 +51,8 @@ pub struct TrustedPeer {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        // Platform-appropriate default hotkey
-        let default_hotkey = if cfg!(target_os = "macos") {
-            vec![0x1D, 0x38, 0x1F] // Ctrl+Alt+S (Mac keyboards lack Scroll Lock)
-        } else {
-            vec![0x46] // Scroll Lock
-        };
+        // Default hotkey: Ctrl+Alt+Space (works on both Windows and Mac keyboards)
+        let default_hotkey = vec![0x1D, 0x38, 0x39];
 
         Self {
             machine_name: hostname(),
@@ -84,13 +80,16 @@ impl AppConfig {
                     changed = true;
                 }
 
-                // Set platform-appropriate default hotkey if none configured
-                if config.switch_hotkey.is_none() {
-                    if cfg!(target_os = "macos") {
-                        config.switch_hotkey = Some(vec![0x1D, 0x38, 0x1F]);
-                    } else {
-                        config.switch_hotkey = Some(vec![0x46]);
+                // Migrate old hotkeys or set default if none configured
+                let needs_hotkey_update = match &config.switch_hotkey {
+                    None => true,
+                    Some(combo) => {
+                        // Migrate old defaults: Scroll Lock [0x46] or Ctrl+Alt+S [0x1D, 0x38, 0x1F]
+                        *combo == vec![0x46u16] || *combo == vec![0x1D, 0x38, 0x1F]
                     }
+                };
+                if needs_hotkey_update {
+                    config.switch_hotkey = Some(vec![0x1D, 0x38, 0x39]); // Ctrl+Alt+Space
                     changed = true;
                 }
 

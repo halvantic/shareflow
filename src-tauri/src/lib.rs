@@ -7,7 +7,7 @@ mod network;
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent, Wry};
 use tokio::sync::mpsc;
 
 use crate::core::config::AppConfig;
@@ -330,40 +330,95 @@ async fn send_file_to_peer(
 
 // --- System tray setup ---
 
-fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItemBuilder::with_id("show", "Show ShareFlow").build(app)?;
-    let status = MenuItemBuilder::with_id("status", "Status: Local")
+/// Build a tray menu dynamically based on current peers and focus state.
+fn build_tray_menu(
+    app: &AppHandle<Wry>,
+    peer_names: &[(String, String)], // (peer_id, name)
+    focus: &FocusState,
+) -> Result<tauri::menu::Menu<Wry>, Box<dyn std::error::Error>> {
+    let status_text = match focus {
+        FocusState::Local => format!("Status: Local | {} peer(s)", peer_names.len()),
+        FocusState::Remote(id) => {
+            let name = peer_names.iter()
+                .find(|(pid, _)| pid == id)
+                .map(|(_, n)| n.as_str())
+                .unwrap_or("unknown");
+            format!("Status: Controlling {}", name)
+        }
+    };
+
+    let status = MenuItemBuilder::with_id("status", &status_text)
         .enabled(false)
         .build(app)?;
-    let toggle = MenuItemBuilder::with_id("toggle", "Toggle Focus (Scroll Lock)").build(app)?;
-    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let separator1 = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let show = MenuItemBuilder::with_id("show", "Show ShareFlow").build(app)?;
+    let separator2 = tauri::menu::PredefinedMenuItem::separator(app)?;
 
-    let menu = MenuBuilder::new(app)
-        .items(&[&status, &separator, &show, &toggle, &separator, &quit])
-        .build()?;
+    let mut builder = MenuBuilder::new(app);
+    builder = builder.items(&[&status, &separator1, &show, &separator2]);
+
+    // Add peer switch items
+    if !peer_names.is_empty() {
+        for (peer_id, name) in peer_names {
+            let is_active = matches!(focus, FocusState::Remote(id) if id == peer_id);
+            let label = if is_active {
+                format!("Return to Local (from {})", name)
+            } else {
+                format!("Switch to {}", name)
+            };
+            let item = MenuItemBuilder::with_id(
+                &format!("peer_{}", peer_id),
+                &label,
+            ).build(app)?;
+            builder = builder.item(&item);
+        }
+    } else {
+        let no_peers = MenuItemBuilder::with_id("no_peers", "No peers connected")
+            .enabled(false)
+            .build(app)?;
+        builder = builder.item(&no_peers);
+    }
+
+    let separator3 = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit ShareFlow").build(app)?;
+    builder = builder.items(&[&separator3, &quit]);
+
+    Ok(builder.build()?)
+}
+
+fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
+    let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local)?;
 
     let app_handle = app.handle().clone();
     let _tray = TrayIconBuilder::new()
         .tooltip("ShareFlow - Keyboard & Mouse Sharing")
-        .menu(&menu)
+        .menu(&initial_menu)
         .on_menu_event(move |app, event| {
-            match event.id().as_ref() {
+            let id = event.id().0.to_string();
+            match id.as_str() {
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
+                        let _ = window.unminimize();
                         let _ = window.set_focus();
                     }
                 }
-                "toggle" => {
-                    let engine = engine.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let focus = engine.get_focus().await;
-                        match focus {
-                            FocusState::Local => {
+                "quit" => {
+                    std::process::exit(0);
+                }
+                _ if id.starts_with("peer_") => {
+                    let peer_id = id.strip_prefix("peer_").unwrap().to_string();
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let engine = state.engine.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let focus = engine.get_focus().await;
+                            if matches!(&focus, FocusState::Remote(id) if id == &peer_id) {
+                                // Already controlling this peer — switch back to local
+                                engine.switch_to_local().await;
+                            } else {
+                                // Switch to this peer
                                 let peers = engine.peers.lock().await;
-                                if let Some(peer) = peers.values().next() {
-                                    let peer_id = peer.id.clone();
+                                if let Some(peer) = peers.get(&peer_id) {
                                     let (ex, ey) = if let Some(s) = peer.screens.first() {
                                         (s.x + s.width / 2, s.y + s.height / 2)
                                     } else {
@@ -379,14 +434,8 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
                                     engine.switch_to_remote(&peer_id, ex, ey).await;
                                 }
                             }
-                            FocusState::Remote(_) => {
-                                engine.switch_to_local().await;
-                            }
-                        }
-                    });
-                }
-                "quit" => {
-                    std::process::exit(0);
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -396,45 +445,60 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
+                    let _ = window.unminimize();
                     let _ = window.set_focus();
                 }
             }
         })
         .build(app)?;
 
-    // Spawn task to update tray menu status text when focus changes.
+    // Spawn task to update tray menu and tooltip when state changes.
     let app_handle2 = app_handle.clone();
-    let _status_id = status.id().clone();
     tauri::async_runtime::spawn(async move {
-        let mut last_text = String::new();
+        let mut last_tooltip = String::new();
+        let mut last_peer_count: usize = 0;
+        let mut last_focus = FocusState::Local;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if let Some(state) = app_handle2.try_state::<AppState>() {
                 let focus = state.engine.get_focus().await;
                 let peers = state.engine.peers.lock().await;
                 let peer_count = peers.len();
-                let text = match &focus {
-                    FocusState::Local => {
-                        format!("Local | {} peer(s)", peer_count)
-                    }
+
+                // Collect peer info for menu
+                let peer_names: Vec<(String, String)> = peers
+                    .values()
+                    .map(|p| (p.id.clone(), p.name.clone()))
+                    .collect();
+
+                let tooltip = match &focus {
+                    FocusState::Local => format!("ShareFlow - Local | {} peer(s)", peer_count),
                     FocusState::Remote(id) => {
                         let name = peers
                             .get(id)
                             .map(|p| p.name.as_str())
                             .unwrap_or("unknown");
-                        format!("Remote: {} | {} peer(s)", name, peer_count)
+                        format!("ShareFlow - Controlling {}", name)
                     }
                 };
                 drop(peers);
-                if text != last_text {
-                    last_text = text.clone();
-                    // Update the status menu item text
-                    if let Some(item) = app_handle2.menu().and_then(|_| None::<tauri::menu::MenuItem<tauri::Wry>>) {
-                        let _ = item.set_text(&text);
-                    }
-                    // Update tooltip as a simpler approach
+
+                // Rebuild tray menu if state changed
+                if peer_count != last_peer_count || focus != last_focus {
+                    last_peer_count = peer_count;
+                    last_focus = focus.clone();
                     if let Some(tray) = app_handle2.tray_by_id("main") {
-                        let _ = tray.set_tooltip(Some(&format!("ShareFlow - {}", text)));
+                        if let Ok(menu) = build_tray_menu(&app_handle2, &peer_names, &focus) {
+                            let _ = tray.set_menu(Some(menu));
+                        }
+                    }
+                }
+
+                // Update tooltip
+                if tooltip != last_tooltip {
+                    last_tooltip = tooltip.clone();
+                    if let Some(tray) = app_handle2.tray_by_id("main") {
+                        let _ = tray.set_tooltip(Some(&tooltip));
                     }
                 }
             }

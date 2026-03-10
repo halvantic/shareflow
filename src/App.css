@@ -341,6 +341,11 @@ button.secondary:hover {
 .screen-box .label {
   font-weight: 600;
   margin-bottom: 2px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
 }
 
 .screen-box .res {
