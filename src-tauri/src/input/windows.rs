@@ -6,6 +6,7 @@ use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    VIRTUAL_KEY,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT,
@@ -477,6 +478,40 @@ impl InputInjector for WindowsInputInjector {
     }
 
     fn send_key(&self, scancode: u16, pressed: bool) -> Result<(), String> {
+        // Toggle keys (Caps/Num/Scroll Lock) must be injected via virtual key
+        // code rather than scancode. KEYEVENTF_SCANCODE bypasses the OS
+        // toggle-state logic, causing them to act as held modifiers instead
+        // of latching toggles.
+        let toggle_vk: Option<u16> = match scancode {
+            0x3A => Some(0x14),  // Caps Lock   → VK_CAPITAL
+            0x45 => Some(0x90),  // Num Lock    → VK_NUMLOCK
+            0x46 => Some(0x91),  // Scroll Lock → VK_SCROLL
+            _ => None,
+        };
+
+        if let Some(vk) = toggle_vk {
+            let mut flags = Default::default();
+            if !pressed {
+                flags |= KEYEVENTF_KEYUP;
+            }
+            unsafe {
+                let input = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            wScan: 0,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+                        },
+                    },
+                };
+                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            }
+            return Ok(());
+        }
+
         let mut flags = KEYEVENTF_SCANCODE;
         if !pressed {
             flags |= KEYEVENTF_KEYUP;
