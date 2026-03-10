@@ -78,7 +78,10 @@ function App() {
   >(new Map());
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [appVersion, setAppVersion] = useState("");
+  const [showDiag, setShowDiag] = useState(false);
+  const [diagLines, setDiagLines] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  const diagRef = useRef<HTMLDivElement>(null);
 
   const addToast = useCallback(
     (text: string, level: "info" | "success" | "error" = "info") => {
@@ -107,6 +110,26 @@ function App() {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
   }, [logs]);
+
+  // Poll diagnostics from Rust backend when panel is open
+  useEffect(() => {
+    if (!showDiag) return;
+    let active = true;
+    const poll = async () => {
+      while (active) {
+        try {
+          const lines = await invoke<string[]>("get_diagnostics");
+          setDiagLines(lines);
+          if (diagRef.current) {
+            diagRef.current.scrollTop = diagRef.current.scrollHeight;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, [showDiag]);
 
   useEffect(() => {
     getVersion().then(setAppVersion);
@@ -724,6 +747,29 @@ function App() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Diagnostics */}
+          <div className="section">
+            <button
+              className="secondary"
+              onClick={() => setShowDiag((v) => !v)}
+              style={{ fontSize: 12, padding: "6px 12px", marginBottom: showDiag ? 8 : 0 }}
+            >
+              {showDiag ? "Hide Diagnostics" : "Show Diagnostics"}
+            </button>
+            {showDiag && (
+              <div className="log" ref={diagRef} style={{ maxHeight: 300 }}>
+                {diagLines.length === 0 && (
+                  <div className="log-entry">No diagnostic events yet...</div>
+                )}
+                {diagLines.map((line, i) => (
+                  <div key={i} className="log-entry info">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

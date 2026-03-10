@@ -36,6 +36,9 @@ static HOOK_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 /// Marker value set in dwExtraInfo to identify our own synthetic events.
 const SHAREFLOW_EXTRA_INFO: usize = 0x53464C57;
 
+/// Track whether we've logged the first keyboard event (confirms hooks work).
+static FIRST_KEY_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Track whether the Win key was pressed while suppressing, so we eat the
 /// matching key-up even if suppress turns off between down and up — a bare
 /// Win key-up reaching the shell opens the Start Menu.
@@ -156,7 +159,10 @@ impl WindowsInputCapture {
 /// Enable or disable input suppression.
 /// When suppressing, captured events are consumed and not passed to the local OS.
 pub fn set_suppress(suppress: bool) {
-    SUPPRESS.store(suppress, Ordering::SeqCst);
+    let prev = SUPPRESS.swap(suppress, Ordering::SeqCst);
+    if prev != suppress {
+        crate::diag(format!("Input suppression: {} → {}", prev, suppress));
+    }
 }
 
 #[allow(dead_code)]
@@ -331,6 +337,11 @@ unsafe extern "system" fn keyboard_hook_proc(
         }
 
         let pressed = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+
+        // Log the first keyboard event to confirm hooks are active.
+        if !FIRST_KEY_LOGGED.swap(true, Ordering::Relaxed) {
+            crate::diag(format!("Keyboard hook active — first key event (vk=0x{:X})", data.vkCode));
+        }
 
         // Handle extended scancodes (arrow keys, Windows key, Right Ctrl/Alt, etc.)
         let mut scancode = data.scanCode as u16;

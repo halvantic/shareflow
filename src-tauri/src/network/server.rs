@@ -172,7 +172,7 @@ async fn handle_peer_session(
                 }
             }
             Message::Key(ke) => {
-                log::info!("Received key: scancode=0x{:X} pressed={}", ke.scancode, ke.pressed);
+                crate::diag(format!("RX key sc=0x{:X} pressed={}", ke.scancode, ke.pressed));
                 if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
                     log::error!("Key injection failed: {}", e);
                 }

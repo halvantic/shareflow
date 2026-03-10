@@ -189,7 +189,7 @@ impl Engine {
         drop(peers);
 
         crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
-        log::info!("Focus switched to remote peer: {}", peer_id);
+        crate::diag(format!("Focus → remote {}", &peer_id[..peer_id.len().min(8)]));
         let _ = self
             .ui_events
             .send(UiEvent::FocusChanged {
@@ -204,7 +204,7 @@ impl Engine {
         *focus = FocusState::Local;
         drop(focus);
         crate::input::set_input_suppression(false);
-        log::info!("Focus switched to local");
+        crate::diag("Focus → local".into());
         let _ = self
             .ui_events
             .send(UiEvent::FocusChanged {

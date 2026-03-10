@@ -17,7 +17,7 @@ pub async fn start_input_loop(
     while let Some(event) = event_rx.recv().await {
         if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
             if let Message::Key(ref ke) = msg {
-                log::info!("Forwarding key scancode=0x{:X} pressed={} to {}", ke.scancode, ke.pressed, peer_id);
+                crate::diag(format!("TX key sc=0x{:X} pressed={} → {}", ke.scancode, ke.pressed, &peer_id[..8]));
             }
             if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
                 log::warn!("Failed to forward input: {}", e);

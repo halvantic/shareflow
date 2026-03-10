@@ -887,11 +887,16 @@ impl InputInjector for MacOSInputInjector {
         );
 
         unsafe {
-            let source = create_event_source();
+            // Use CombinedSession source for keyboard — more reliable than HIDSystem
+            // when no physical keyboard activity has occurred on this Mac yet.
+            let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION);
             let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                CGEventPost(KCG_HID_EVENT_TAP, event);
+                // Post to session tap (not HID tap). Session-level injection is
+                // more reliable — it doesn't require a fully warmed HID state and
+                // avoids the "need to wake keyboard first" issue.
+                CGEventPost(KCG_SESSION_EVENT_TAP, event);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);

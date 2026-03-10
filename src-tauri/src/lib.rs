@@ -14,6 +14,24 @@ use crate::core::config::AppConfig;
 use crate::core::engine::{Engine, FocusState, UiEvent};
 use crate::core::screen::get_screens;
 
+// --- Diagnostic ring-buffer log ---
+use std::sync::Mutex;
+
+static DIAG_LOG: std::sync::LazyLock<Mutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Push a diagnostic message (kept in a ring buffer, max 200 entries).
+pub fn diag(msg: String) {
+    log::info!("{}", msg);
+    if let Ok(mut buf) = DIAG_LOG.lock() {
+        buf.push(msg);
+        let len = buf.len();
+        if len > 200 {
+            buf.drain(..len - 200);
+        }
+    }
+}
+
 /// Shared application state accessible from Tauri commands.
 struct AppState {
     engine: Arc<Engine>,
@@ -276,6 +294,11 @@ async fn set_neighbor(
     }
     config.save();
     Ok(())
+}
+
+#[tauri::command]
+fn get_diagnostics() -> Vec<String> {
+    DIAG_LOG.lock().map(|buf| buf.clone()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -547,6 +570,7 @@ pub fn run() {
             switch_focus_local,
             set_neighbor,
             send_file_to_peer,
+            get_diagnostics,
             quit_app,
         ])
         // On Windows, hide the window to tray when minimized or closed
@@ -596,21 +620,24 @@ pub fn run() {
             });
 
             // Start input capture and forwarding loop.
+            // Keep _capture alive for the lifetime of the app — dropping it
+            // detaches the hook thread which is fine but we avoid any edge cases.
             let engine_input = engine.clone();
-            {
-                let (_capture, event_rx) = input::create_capture_with_channel();
-                if let Some(std_rx) = event_rx {
-                    let (async_tx, async_rx) = mpsc::channel(4096);
-                    core::runtime::start_event_bridge(std_rx, async_tx);
+            let (_capture, event_rx) = input::create_capture_with_channel();
+            if let Some(std_rx) = event_rx {
+                let (async_tx, async_rx) = mpsc::channel(4096);
+                core::runtime::start_event_bridge(std_rx, async_tx);
 
-                    tauri::async_runtime::spawn(async move {
-                        core::runtime::start_input_loop(
-                            engine_input,
-                            async_rx,
-                        )
-                        .await;
-                    });
-                }
+                tauri::async_runtime::spawn(async move {
+                    core::runtime::start_input_loop(
+                        engine_input,
+                        async_rx,
+                    )
+                    .await;
+                });
+                diag("Input capture pipeline fully initialized".into());
+            } else {
+                log::error!("Failed to create input capture — no event receiver");
             }
 
             // Start clipboard sync.
