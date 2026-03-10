@@ -16,6 +16,10 @@ static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::n
 static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Track which mouse button is currently held (0=none, 1=left, 2=right, 3=other).
+/// Used to post drag events instead of move events during a drag.
+static HELD_BUTTON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// Remote screen bounds for clamping virtual position.
 static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -769,15 +773,22 @@ impl InputInjector for MacOSInputInjector {
             };
             CGWarpMouseCursorPosition(point);
 
-            // Post a mouse-moved event to re-sync the event stream after warp.
-            // Without this, macOS dissociates cursor and event state, causing
-            // subsequent click/key events to silently fail.
+            // Post a mouse event to re-sync the event stream after warp.
+            // Use drag event type when a button is held, otherwise macOS
+            // won't show live window dragging.
+            let held = HELD_BUTTON.load(Ordering::SeqCst);
+            let (event_type, cg_button) = match held {
+                1 => (KCG_EVENT_LEFT_MOUSE_DRAGGED, 0u32),
+                2 => (KCG_EVENT_RIGHT_MOUSE_DRAGGED, 1),
+                3 => (KCG_EVENT_OTHER_MOUSE_DRAGGED, 2),
+                _ => (KCG_EVENT_MOUSE_MOVED, 0),
+            };
             let source = create_event_source();
             let move_event = CGEventCreateMouseEvent(
                 source,
-                KCG_EVENT_MOUSE_MOVED,
+                event_type,
                 point,
-                0,
+                cg_button,
             );
             if !move_event.is_null() {
                 CGEventSetIntegerValueField(move_event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
@@ -820,6 +831,18 @@ impl InputInjector for MacOSInputInjector {
                 (MouseButton::Button5, true) => (KCG_EVENT_OTHER_MOUSE_DOWN, 4),
                 (MouseButton::Button5, false) => (KCG_EVENT_OTHER_MOUSE_UP, 4),
             };
+
+            // Track held button so move_mouse can post drag events
+            if pressed {
+                let held = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Right => 2,
+                    _ => 3,
+                };
+                HELD_BUTTON.store(held, Ordering::SeqCst);
+            } else {
+                HELD_BUTTON.store(0, Ordering::SeqCst);
+            }
 
             let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);
             if !event.is_null() {

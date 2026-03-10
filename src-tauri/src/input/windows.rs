@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -410,32 +410,9 @@ impl WindowsInputInjector {
 
 impl InputInjector for WindowsInputInjector {
     fn move_mouse(&self, x: i32, y: i32) -> Result<(), String> {
+        // SetCursorPos is pixel-perfect — no 0-65535 normalization rounding.
         unsafe {
-            let virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            let virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN) as f64;
-            let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN) as f64;
-
-            // Absolute coordinates are normalized 0..65535 across the virtual desktop.
-            let abs_x = (((x - virt_x) as f64 / screen_w) * 65535.0) as i32;
-            let abs_y = (((y - virt_y) as f64 / screen_h) * 65535.0) as i32;
-
-            let input = INPUT {
-                r#type: INPUT_MOUSE,
-                Anonymous: INPUT_0 {
-                    mi: MOUSEINPUT {
-                        dx: abs_x,
-                        dy: abs_y,
-                        mouseData: 0,
-                        dwFlags: MOUSEEVENTF_MOVE
-                            | MOUSEEVENTF_ABSOLUTE
-                            | MOUSEEVENTF_VIRTUALDESK,
-                        time: 0,
-                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
-                    },
-                },
-            };
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            let _ = SetCursorPos(x, y);
         }
         Ok(())
     }

@@ -151,13 +151,50 @@ async fn handle_peer_session(
     let injector = crate::input::create_injector();
     while let Some(msg) = conn.incoming.recv().await {
         match msg {
-            Message::MouseMove(mv) => {
-                let _ = injector.move_mouse(mv.x, mv.y);
-                // Check if the injected position hits a local edge for switching back.
-                let edge_event = crate::input::InputEvent::MouseMove(mv);
-                if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
-                    if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
-                        log::warn!("Failed to send edge switch: {}", e);
+            Message::MouseMove(mut mv) => {
+                // Coalesce: drain any queued mouse moves and jump to the latest
+                // position. This avoids processing stale positions when events
+                // arrive in bursts over the network.
+                while let Ok(next) = conn.incoming.try_recv() {
+                    match next {
+                        Message::MouseMove(newer) => mv = newer,
+                        other => {
+                            // Non-mouse message — process the coalesced move first,
+                            // then handle this message on the next loop iteration.
+                            let _ = injector.move_mouse(mv.x, mv.y);
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
+                            // Re-process the non-mouse message
+                            match other {
+                                Message::MouseButton(mb) => {
+                                    let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                                }
+                                Message::MouseScroll(ms) => {
+                                    let _ = injector.scroll(ms.dx, ms.dy);
+                                }
+                                Message::Key(ke) => {
+                                    crate::diag(format!("RX key sc=0x{:X} pressed={}", ke.scancode, ke.pressed));
+                                    let _ = injector.send_key(ke.scancode, ke.pressed);
+                                }
+                                _ => {} // Other messages handled below in main match
+                            }
+                            // Use a sentinel to skip the move injection below
+                            mv = crate::core::protocol::MouseMoveEvent { x: i32::MIN, y: i32::MIN };
+                            break;
+                        }
+                    }
+                }
+                if mv.x != i32::MIN {
+                    let _ = injector.move_mouse(mv.x, mv.y);
+                    let edge_event = crate::input::InputEvent::MouseMove(mv);
+                    if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                        if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                            log::warn!("Failed to send edge switch: {}", e);
+                        }
                     }
                 }
             }
