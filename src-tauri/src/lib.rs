@@ -218,6 +218,13 @@ async fn switch_focus_to(
         entry_y,
     };
     peer.sender.send(msg).await.map_err(|e| e.to_string())?;
+    // Send an initial MouseMove so the Mac has cursor context before key events.
+    // Without this, CGEventPost keyboard injection can silently fail because
+    // macOS hasn't fully synced cursor/event state from the SwitchFocus warp.
+    let mouse_msg = crate::core::protocol::Message::MouseMove(
+        crate::core::protocol::MouseMoveEvent { x: entry_x, y: entry_y },
+    );
+    peer.sender.send(mouse_msg).await.map_err(|e| e.to_string())?;
     drop(peers);
 
     state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
@@ -416,6 +423,11 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
                                         entry_y: ey,
                                     };
                                     let _ = peer.sender.send(msg).await;
+                                    // Send initial MouseMove to prime Mac's event stream
+                                    let mouse_msg = crate::core::protocol::Message::MouseMove(
+                                        crate::core::protocol::MouseMoveEvent { x: ex, y: ey },
+                                    );
+                                    let _ = peer.sender.send(mouse_msg).await;
                                     drop(peers);
                                     engine.switch_to_remote(&peer_id, ex, ey).await;
                                 }
