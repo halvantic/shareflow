@@ -25,7 +25,6 @@ interface AppConfig {
   peer_id: string;
   port: number;
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
-  switch_hotkey: number[] | null;
   trusted_peers: any[];
 }
 
@@ -58,13 +57,6 @@ interface Toast {
   text: string;
   level: "info" | "success" | "error";
 }
-
-const HOTKEY_PRESETS: { label: string; scancodes: number[] }[] = [
-  { label: "Scroll Lock", scancodes: [0x46] },
-  { label: "Ctrl + Scroll Lock", scancodes: [0x1d, 0x46] },
-  { label: "Ctrl + Alt + S", scancodes: [0x1d, 0x38, 0x1f] },
-  { label: "Ctrl + Alt + Space", scancodes: [0x1d, 0x38, 0x39] },
-];
 
 let toastCounter = 0;
 
@@ -317,17 +309,6 @@ function App() {
     }
   };
 
-  const handleSetHotkey = async (scancodes: number[]) => {
-    try {
-      await invoke("set_hotkey", { scancodes });
-      addLog(`Hotkey updated`, "success");
-      const cfg = await invoke<any>("get_config");
-      setConfig(cfg);
-    } catch (e: any) {
-      addLog(`Set hotkey failed: ${e}`, "error");
-    }
-  };
-
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -345,12 +326,6 @@ function App() {
   const remotePeerId = isRemote
     ? (focus as { Remote: string }).Remote
     : null;
-
-  const currentHotkeyMatch = (codes: number[]) => {
-    const current = config?.switch_hotkey || [0x46];
-    if (current.length !== codes.length) return false;
-    return codes.every((c) => current.includes(c));
-  };
 
   const isNeighborSet = (
     peerId: string,
@@ -619,29 +594,6 @@ function App() {
               ))}
             </div>
           )}
-
-          {/* Hotkey */}
-          <div className="section">
-            <h2>Switch Hotkey</h2>
-            <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-              Press this key combo to toggle focus between local and remote.
-            </p>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {HOTKEY_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  className={
-                    currentHotkeyMatch(preset.scancodes) ? "" : "secondary"
-                  }
-                  onClick={() => handleSetHotkey(preset.scancodes)}
-                  style={{ fontSize: 12, padding: "6px 12px" }}
-                >
-                  {preset.label}
-                  {currentHotkeyMatch(preset.scancodes) ? " *" : ""}
-                </button>
-              ))}
-            </div>
-          </div>
 
           {/* File Transfers */}
           {(activeTransfers.length > 0 || receivedFiles.length > 0) && (

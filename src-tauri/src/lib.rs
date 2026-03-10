@@ -12,13 +12,11 @@ use tokio::sync::mpsc;
 
 use crate::core::config::AppConfig;
 use crate::core::engine::{Engine, FocusState, UiEvent};
-use crate::core::hotkey::HotkeyDetector;
 use crate::core::screen::get_screens;
 
 /// Shared application state accessible from Tauri commands.
 struct AppState {
     engine: Arc<Engine>,
-    hotkey: Arc<HotkeyDetector>,
 }
 
 // --- Tauri Commands ---
@@ -274,19 +272,6 @@ async fn set_neighbor(
 }
 
 #[tauri::command]
-fn set_hotkey(state: tauri::State<'_, AppState>, scancodes: Vec<u16>) -> Result<(), String> {
-    state.hotkey.set_combo(scancodes.clone());
-
-    let engine = state.engine.clone();
-    tauri::async_runtime::block_on(async {
-        let mut config = engine.config.lock().await;
-        config.switch_hotkey = Some(scancodes);
-        config.save();
-    });
-    Ok(())
-}
-
-#[tauri::command]
 fn quit_app() {
     std::process::exit(0);
 }
@@ -390,7 +375,8 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
     let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local)?;
 
     let app_handle = app.handle().clone();
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().cloned().unwrap())
         .tooltip("ShareFlow - Keyboard & Mouse Sharing")
         .menu(&initial_menu)
         .on_menu_event(move |app, event| {
@@ -519,12 +505,6 @@ pub fn run() {
         config.machine_name
     );
 
-    // Set up hotkey detector
-    let hotkey = Arc::new(HotkeyDetector::new());
-    if let Some(ref combo) = config.switch_hotkey {
-        hotkey.set_combo(combo.clone());
-    }
-
     let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(256);
     let engine = Arc::new(Engine::new(config, ui_tx));
 
@@ -541,7 +521,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             engine: engine.clone(),
-            hotkey: hotkey.clone(),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -555,7 +534,6 @@ pub fn run() {
             switch_focus_to,
             switch_focus_local,
             set_neighbor,
-            set_hotkey,
             send_file_to_peer,
             quit_app,
         ])
@@ -605,9 +583,8 @@ pub fn run() {
                 }
             });
 
-            // Start input capture and forwarding loop with hotkey detection.
+            // Start input capture and forwarding loop.
             let engine_input = engine.clone();
-            let hotkey_input = hotkey.clone();
             {
                 let (_capture, event_rx) = input::create_capture_with_channel();
                 if let Some(std_rx) = event_rx {
@@ -618,7 +595,6 @@ pub fn run() {
                         core::runtime::start_input_loop(
                             engine_input,
                             async_rx,
-                            hotkey_input,
                         )
                         .await;
                     });

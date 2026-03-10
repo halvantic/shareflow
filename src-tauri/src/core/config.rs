@@ -35,9 +35,6 @@ pub struct AppConfig {
     /// Configured screen neighbors.
     pub neighbors: Vec<Neighbor>,
 
-    /// Hotkey scancode combo to force-switch (e.g., Ctrl+Alt+S).
-    pub switch_hotkey: Option<Vec<u16>>,
-
     /// Known/trusted peer certificates (fingerprints).
     pub trusted_peers: Vec<TrustedPeer>,
 }
@@ -51,15 +48,11 @@ pub struct TrustedPeer {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        // Default hotkey: Ctrl+Alt+Space (works on both Windows and Mac keyboards)
-        let default_hotkey = vec![0x1D, 0x38, 0x39];
-
         Self {
             machine_name: hostname(),
             peer_id: uuid::Uuid::new_v4().to_string(),
             port: 24800,
             neighbors: Vec::new(),
-            switch_hotkey: Some(default_hotkey),
             trusted_peers: Vec::new(),
         }
     }
@@ -77,19 +70,6 @@ impl AppConfig {
                 // Fix placeholder hostnames from previous versions
                 if config.machine_name == "Unknown-PC" || config.machine_name.is_empty() {
                     config.machine_name = hostname();
-                    changed = true;
-                }
-
-                // Migrate old hotkeys or set default if none configured
-                let needs_hotkey_update = match &config.switch_hotkey {
-                    None => true,
-                    Some(combo) => {
-                        // Migrate old defaults: Scroll Lock [0x46] or Ctrl+Alt+S [0x1D, 0x38, 0x1F]
-                        *combo == vec![0x46u16] || *combo == vec![0x1D, 0x38, 0x1F]
-                    }
-                };
-                if needs_hotkey_update {
-                    config.switch_hotkey = Some(vec![0x1D, 0x38, 0x39]); // Ctrl+Alt+Space
                     changed = true;
                 }
 
