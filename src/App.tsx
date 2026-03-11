@@ -26,6 +26,8 @@ interface AppConfig {
   port: number;
   discovery_port: number;
   auto_connect: boolean;
+  camera_sharing_enabled: boolean;
+  audio_sharing_enabled: boolean;
   trusted_hosts: { peer_id: string; name: string }[];
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
   trusted_peers: any[];
@@ -88,15 +90,23 @@ function App() {
   const [settingsDiscoveryPort, setSettingsDiscoveryPort] = useState("");
   const [settingsAutoConnect, setSettingsAutoConnect] = useState(false);
   const [settingsMachineName, setSettingsMachineName] = useState("");
+  const [settingsCameraEnabled, setSettingsCameraEnabled] = useState(false);
+  const [settingsAudioEnabled, setSettingsAudioEnabled] = useState(false);
   // Camera KVM state
   const [cameraActive, setCameraActive] = useState(false);
   const [remoteCameras, setRemoteCameras] = useState<Map<string, string>>(new Map());
+  // Audio KVM state
+  const [audioActive, setAudioActive] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const diagRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const nextAudioTimeRef = useRef<number>(0);
 
   const addToast = useCallback(
     (text: string, level: "info" | "success" | "error" = "info") => {
@@ -154,6 +164,8 @@ function App() {
       setSettingsDiscoveryPort(String(cfg.discovery_port || 24801));
       setSettingsAutoConnect(cfg.auto_connect || false);
       setSettingsMachineName(cfg.machine_name || "");
+      setSettingsCameraEnabled(cfg.camera_sharing_enabled || false);
+      setSettingsAudioEnabled(cfg.audio_sharing_enabled || false);
       addLog(
         `Machine: ${cfg.machine_name} (${cfg.peer_id.slice(0, 8)}...)`,
         "info"
@@ -280,6 +292,34 @@ function App() {
             return next;
           });
           break;
+        case "AudioChunk":
+          // Decode and schedule audio playback via Web Audio API
+          (async () => {
+            try {
+              if (!audioCtxRef.current) {
+                audioCtxRef.current = new AudioContext();
+              }
+              const ctx = audioCtxRef.current;
+              if (ctx.state === "suspended") await ctx.resume();
+              const raw = atob(data.data_b64);
+              const bytes = new Uint8Array(raw.length);
+              for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+              const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+              const source = ctx.createBufferSource();
+              source.buffer = audioBuffer;
+              source.connect(ctx.destination);
+              // Schedule to avoid gaps/overlaps between chunks
+              const now = ctx.currentTime;
+              if (nextAudioTimeRef.current < now + 0.05) {
+                nextAudioTimeRef.current = now + 0.05;
+              }
+              source.start(nextAudioTimeRef.current);
+              nextAudioTimeRef.current += audioBuffer.duration;
+            } catch {
+              // Silently ignore decode errors (partial chunks, unsupported codec)
+            }
+          })();
+          break;
       }
     });
 
@@ -290,6 +330,10 @@ function App() {
       // Stop camera if active
       if (cameraIntervalRef.current) clearInterval(cameraIntervalRef.current);
       if (cameraStreamRef.current) cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      // Stop audio if active
+      if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") audioRecorderRef.current.stop();
+      if (audioStreamRef.current) audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      if (audioCtxRef.current) audioCtxRef.current.close();
     };
   }, [addLog, addToast]);
 
@@ -384,6 +428,8 @@ function App() {
         discoveryPort,
         autoConnect: settingsAutoConnect,
         machineName: settingsMachineName,
+        cameraSharingEnabled: settingsCameraEnabled,
+        audioSharingEnabled: settingsAudioEnabled,
       });
       const cfg = await invoke<any>("get_config");
       setConfig(cfg);
@@ -479,6 +525,60 @@ function App() {
     }
     setCameraActive(false);
     addLog("Camera sharing stopped", "info");
+  };
+
+  const handleStartAudio = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      audioStreamRef.current = stream;
+
+      // Prefer Opus in WebM for wide browser support and good compression
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+
+      const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 });
+      audioRecorderRef.current = recorder;
+
+      recorder.ondataavailable = async (e) => {
+        if (!e.data || e.data.size === 0) return;
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const result = reader.result as string;
+          const b64 = result.split(",")[1];
+          if (b64) {
+            try {
+              await invoke("send_audio_chunk", { dataB64: b64 });
+            } catch {
+              // Silently ignore — no peers connected yet
+            }
+          }
+        };
+        reader.readAsDataURL(e.data);
+      };
+
+      // Emit a chunk every 100ms for low-latency streaming
+      recorder.start(100);
+      setAudioActive(true);
+      addLog("Audio sharing started", "success");
+      addToast("Audio sharing on", "success");
+    } catch (e: any) {
+      addLog(`Microphone error: ${e}`, "error");
+      addToast("Microphone access denied", "error");
+    }
+  };
+
+  const handleStopAudio = () => {
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+      audioRecorderRef.current.stop();
+      audioRecorderRef.current = null;
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+    }
+    setAudioActive(false);
+    addLog("Audio sharing stopped", "info");
   };
 
   const formatBytes = (bytes: number) => {
@@ -738,6 +838,39 @@ function App() {
                 </span>
               </div>
 
+              {/* Sharing features */}
+              <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, color: "#e94560", fontWeight: 600 }}>
+                Sharing Features
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settingsCameraEnabled}
+                    onChange={(e) => setSettingsCameraEnabled(e.target.checked)}
+                  />
+                  Enable Camera KVM
+                </label>
+                <span className="settings-hint">
+                  Allow sharing your webcam feed with connected peers
+                </span>
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settingsAudioEnabled}
+                    onChange={(e) => setSettingsAudioEnabled(e.target.checked)}
+                  />
+                  Enable Audio KVM
+                </label>
+                <span className="settings-hint">
+                  Allow sharing your microphone audio with connected peers (WebM/Opus streaming)
+                </span>
+              </div>
+
               <button onClick={handleSaveSettings} style={{ marginTop: 8, marginBottom: 16 }}>
                 Save Settings
               </button>
@@ -808,8 +941,8 @@ function App() {
             </div>
           )}
 
-          {/* Camera KVM */}
-          <div className="section">
+          {/* Camera KVM — only shown when enabled in Settings */}
+          {config?.camera_sharing_enabled && <div className="section">
             <h2>Camera KVM</h2>
             <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
               Share your webcam across connected machines. Peers will see your
@@ -904,7 +1037,38 @@ function App() {
                 wait for a connected peer to share theirs.
               </div>
             )}
-          </div>
+          </div>}
+
+          {/* Audio KVM — only shown when enabled in Settings */}
+          {config?.audio_sharing_enabled && (
+            <div className="section">
+              <h2>Audio KVM</h2>
+              <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+                Stream your microphone to connected peers. Their audio will play
+                through your speakers via Web Audio. ~100ms latency, WebM/Opus codec.
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                <button
+                  onClick={audioActive ? handleStopAudio : handleStartAudio}
+                  style={{ minWidth: 130 }}
+                >
+                  {audioActive ? "Stop Audio Share" : "Share My Mic"}
+                </button>
+                {audioActive && (
+                  <span style={{ fontSize: 11, color: "#4caf50" }}>
+                    Broadcasting to {peers.length} peer(s)
+                  </span>
+                )}
+              </div>
+              {!audioActive && (
+                <div style={{ fontSize: 12, color: "#555" }}>
+                  Click "Share My Mic" to start streaming your microphone.
+                  Connected peers sharing audio will play automatically through
+                  your speakers.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Screen Layout */}
           <div className="section">

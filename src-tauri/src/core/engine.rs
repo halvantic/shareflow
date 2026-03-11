@@ -69,6 +69,11 @@ pub enum UiEvent {
         peer_id: String,
         data_b64: String,
     },
+    /// An audio chunk received from a peer (base64-encoded WebM/Opus).
+    AudioChunk {
+        peer_id: String,
+        data_b64: String,
+    },
 }
 
 impl Engine {

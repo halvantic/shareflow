@@ -47,6 +47,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub auto_connect: bool,
 
+    /// Allow camera sharing with connected peers.
+    #[serde(default)]
+    pub camera_sharing_enabled: bool,
+
+    /// Allow audio (microphone) sharing with connected peers.
+    #[serde(default)]
+    pub audio_sharing_enabled: bool,
+
     /// Hosts trusted for auto-connect.
     #[serde(default)]
     pub trusted_hosts: Vec<TrustedHost>,
@@ -77,6 +85,8 @@ impl Default for AppConfig {
             port: 24800,
             discovery_port: 24801,
             auto_connect: false,
+            camera_sharing_enabled: false,
+            audio_sharing_enabled: false,
             trusted_hosts: Vec::new(),
             neighbors: Vec::new(),
             trusted_peers: Vec::new(),

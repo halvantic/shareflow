@@ -258,6 +258,17 @@ async fn handle_peer_session(
                     })
                     .await;
             }
+            Message::AudioChunk { data } => {
+                use base64::engine::Engine as _;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                let _ = engine
+                    .ui_events
+                    .send(crate::core::engine::UiEvent::AudioChunk {
+                        peer_id: remote_peer_id.clone(),
+                        data_b64: b64,
+                    })
+                    .await;
+            }
             Message::Ping => {
                 let _ = conn.outgoing.send(Message::Pong).await;
             }
