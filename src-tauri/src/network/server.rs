@@ -247,6 +247,17 @@ async fn handle_peer_session(
             Message::ClipboardUpdate { content } => {
                 crate::clipboard::sync::apply_remote_clipboard(content);
             }
+            Message::CameraFrame { data } => {
+                use base64::engine::Engine as _;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                let _ = engine
+                    .ui_events
+                    .send(crate::core::engine::UiEvent::CameraFrame {
+                        peer_id: remote_peer_id.clone(),
+                        data_b64: b64,
+                    })
+                    .await;
+            }
             Message::Ping => {
                 let _ = conn.outgoing.send(Message::Pong).await;
             }

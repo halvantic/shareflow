@@ -88,8 +88,15 @@ function App() {
   const [settingsDiscoveryPort, setSettingsDiscoveryPort] = useState("");
   const [settingsAutoConnect, setSettingsAutoConnect] = useState(false);
   const [settingsMachineName, setSettingsMachineName] = useState("");
+  // Camera KVM state
+  const [cameraActive, setCameraActive] = useState(false);
+  const [remoteCameras, setRemoteCameras] = useState<Map<string, string>>(new Map());
   const logRef = useRef<HTMLDivElement>(null);
   const diagRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cameraIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const addToast = useCallback(
     (text: string, level: "info" | "success" | "error" = "info") => {
@@ -218,6 +225,12 @@ function App() {
         case "PeerDisconnected":
           addToast(`Peer disconnected`, "error");
           addLog(`Peer disconnected: ${data.id.slice(0, 8)}...`, "error");
+          // Remove any camera feed from this peer
+          setRemoteCameras((prev) => {
+            const next = new Map(prev);
+            next.delete(data.id);
+            return next;
+          });
           break;
         case "Log":
           addLog(data.message, data.level);
@@ -260,6 +273,13 @@ function App() {
             return next;
           });
           break;
+        case "CameraFrame":
+          setRemoteCameras((prev) => {
+            const next = new Map(prev);
+            next.set(data.peer_id, `data:image/jpeg;base64,${data.data_b64}`);
+            return next;
+          });
+          break;
       }
     });
 
@@ -267,6 +287,9 @@ function App() {
       clearInterval(interval);
       clearInterval(cleanupInterval);
       unlisten.then((f) => f());
+      // Stop camera if active
+      if (cameraIntervalRef.current) clearInterval(cameraIntervalRef.current);
+      if (cameraStreamRef.current) cameraStreamRef.current.getTracks().forEach((t) => t.stop());
     };
   }, [addLog, addToast]);
 
@@ -393,6 +416,69 @@ function App() {
     } catch (e: any) {
       addLog(`Failed to remove trusted host: ${e}`, "error");
     }
+  };
+
+  const handleStartCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 10 } },
+      });
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setCameraActive(true);
+      addLog("Camera sharing started", "success");
+      addToast("Camera sharing on", "success");
+
+      // Capture and broadcast frames at ~10fps
+      cameraIntervalRef.current = setInterval(async () => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!video || !canvas || video.readyState < 2) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(async (blob) => {
+          if (!blob) return;
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const result = reader.result as string;
+            const b64 = result.split(",")[1];
+            if (b64) {
+              try {
+                await invoke("send_camera_frame", { dataB64: b64 });
+              } catch {
+                // Silently ignore send errors (e.g. no peers connected)
+              }
+            }
+          };
+          reader.readAsDataURL(blob);
+        }, "image/jpeg", 0.5);
+      }, 100);
+    } catch (e: any) {
+      addLog(`Camera error: ${e}`, "error");
+      addToast("Camera access denied", "error");
+    }
+  };
+
+  const handleStopCamera = () => {
+    if (cameraIntervalRef.current) {
+      clearInterval(cameraIntervalRef.current);
+      cameraIntervalRef.current = null;
+    }
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    addLog("Camera sharing stopped", "info");
   };
 
   const formatBytes = (bytes: number) => {
@@ -721,6 +807,104 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* Camera KVM */}
+          <div className="section">
+            <h2>Camera KVM</h2>
+            <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+              Share your webcam across connected machines. Peers will see your
+              camera feed in real time.
+            </p>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <button
+                onClick={cameraActive ? handleStopCamera : handleStartCamera}
+                style={{ minWidth: 130 }}
+              >
+                {cameraActive ? "Stop Camera Share" : "Share My Camera"}
+              </button>
+              {cameraActive && (
+                <span style={{ fontSize: 11, color: "#4caf50" }}>
+                  Broadcasting to {peers.length} peer(s)
+                </span>
+              )}
+            </div>
+
+            {/* Hidden video + canvas used for frame capture */}
+            <video
+              ref={videoRef}
+              style={{ display: "none" }}
+              muted
+              playsInline
+            />
+            <canvas ref={canvasRef} style={{ display: "none" }} />
+
+            {/* Local camera preview */}
+            {cameraActive && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: "#aaa", marginBottom: 6 }}>
+                  Your Camera (preview)
+                </div>
+                <video
+                  ref={(el) => {
+                    if (el && cameraStreamRef.current) {
+                      el.srcObject = cameraStreamRef.current;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  muted
+                  playsInline
+                  autoPlay
+                  style={{
+                    width: 240,
+                    borderRadius: 6,
+                    border: "1px solid #333",
+                    background: "#000",
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Remote camera feeds */}
+            {remoteCameras.size > 0 && (
+              <div>
+                <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>
+                  Remote Cameras
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                  {Array.from(remoteCameras.entries()).map(([peerId, src]) => {
+                    const peerName =
+                      peers.find((p) => p.id === peerId)?.name ||
+                      peerId.slice(0, 8) + "...";
+                    return (
+                      <div key={peerId}>
+                        <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>
+                          {peerName}
+                        </div>
+                        <img
+                          src={src}
+                          alt={peerName}
+                          style={{
+                            width: 240,
+                            borderRadius: 6,
+                            border: "1px solid #333",
+                            background: "#000",
+                            display: "block",
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {remoteCameras.size === 0 && !cameraActive && (
+              <div style={{ fontSize: 12, color: "#555" }}>
+                No camera feeds active. Click "Share My Camera" to broadcast yours, or
+                wait for a connected peer to share theirs.
+              </div>
+            )}
+          </div>
 
           {/* Screen Layout */}
           <div className="section">

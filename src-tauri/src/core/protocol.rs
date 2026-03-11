@@ -72,6 +72,9 @@ pub enum Message {
         reason: String,
     },
 
+    /// Camera frame from a peer (JPEG-encoded bytes).
+    CameraFrame { data: Vec<u8> },
+
     /// Ping/pong for keepalive.
     Ping,
     Pong,

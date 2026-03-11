@@ -166,6 +166,17 @@ async fn connect_to_peer_cmd(
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
                             crate::clipboard::sync::apply_remote_clipboard(content);
                         }
+                        crate::core::protocol::Message::CameraFrame { data } => {
+                            use base64::engine::Engine as _;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            let _ = engine
+                                .ui_events
+                                .send(UiEvent::CameraFrame {
+                                    peer_id: remote_peer_id.clone(),
+                                    data_b64: b64,
+                                })
+                                .await;
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -293,6 +304,23 @@ async fn set_neighbor(
         });
     }
     config.save();
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_camera_frame(
+    state: tauri::State<'_, AppState>,
+    data_b64: String,
+) -> Result<(), String> {
+    use base64::engine::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&data_b64)
+        .map_err(|e| e.to_string())?;
+    let msg = crate::core::protocol::Message::CameraFrame { data };
+    let peers = state.engine.peers.lock().await;
+    for peer in peers.values() {
+        let _ = peer.sender.send(msg.clone()).await;
+    }
     Ok(())
 }
 
@@ -670,6 +698,17 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
                             crate::clipboard::sync::apply_remote_clipboard(content);
                         }
+                        crate::core::protocol::Message::CameraFrame { data } => {
+                            use base64::engine::Engine as _;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            let _ = engine2
+                                .ui_events
+                                .send(UiEvent::CameraFrame {
+                                    peer_id: remote_peer_id.clone(),
+                                    data_b64: b64,
+                                })
+                                .await;
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -735,6 +774,7 @@ pub fn run() {
             switch_focus_local,
             set_neighbor,
             send_file_to_peer,
+            send_camera_frame,
             get_diagnostics,
             quit_app,
             update_settings,

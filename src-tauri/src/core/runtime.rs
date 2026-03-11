@@ -7,6 +7,15 @@ use crate::core::engine::{Engine, FocusState};
 use crate::core::protocol::{ClipboardContent, Message};
 use crate::input::InputEvent;
 
+/// PS/2 scancodes for copy/paste shortcut detection (same values on Windows and macOS
+/// after the mac_vk_to_scancode mapping in input/macos.rs).
+const SC_C: u16 = 0x2E;
+const SC_V: u16 = 0x2F;
+const SC_LCTRL: u16 = 0x1D;
+const SC_RCTRL: u16 = 0x11D;
+/// macOS Command key maps to Windows/Super scancode 0x15B via mac_vk_to_scancode.
+const SC_CMD: u16 = 0x15B;
+
 /// Start the input capture → engine → network forwarding loop.
 pub async fn start_input_loop(
     engine: Arc<Engine>,
@@ -14,10 +23,81 @@ pub async fn start_input_loop(
 ) {
     log::info!("Input forwarding loop started");
 
+    // Track modifier key state for copy/paste shortcut detection.
+    let mut ctrl_held = false;
+    let mut cmd_held = false;
+
     while let Some(event) = event_rx.recv().await {
+        // Track modifier keys.
+        if let InputEvent::Key(ref ke) = event {
+            match ke.scancode {
+                SC_LCTRL | SC_RCTRL => ctrl_held = ke.pressed,
+                SC_CMD => cmd_held = ke.pressed,
+                _ => {}
+            }
+        }
+
+        // Detect copy (Ctrl/Cmd+C) and paste (Ctrl/Cmd+V) for immediate clipboard sync.
+        if let InputEvent::Key(ref ke) = event {
+            let modifier = ctrl_held || cmd_held;
+            let is_copy = ke.pressed && ke.scancode == SC_C && modifier;
+            let is_paste = ke.pressed && ke.scancode == SC_V && modifier;
+
+            if is_copy || is_paste {
+                let focus = engine.get_focus().await;
+
+                if is_copy {
+                    if let FocusState::Local = focus {
+                        // Copying locally: push to all peers after a brief delay so the OS
+                        // has time to update the clipboard before we read it.
+                        let engine_clone = engine.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            if let Some(text) = clipboard::sync::get_clipboard_text() {
+                                let peers = engine_clone.peers.lock().await;
+                                for peer in peers.values() {
+                                    let _ = peer
+                                        .sender
+                                        .send(Message::ClipboardUpdate {
+                                            content: ClipboardContent::Text(text.clone()),
+                                        })
+                                        .await;
+                                }
+                            }
+                        });
+                    }
+                    // When focus=Remote, Ctrl+C is forwarded to the remote machine.
+                    // The remote's own clipboard sync loop will detect the change and
+                    // push the new content back to us automatically.
+                }
+
+                if is_paste {
+                    if let FocusState::Remote(ref peer_id) = focus {
+                        // Before forwarding Ctrl+V to the remote machine, push our local
+                        // clipboard so the remote pastes our content instead of its own.
+                        if let Some(text) = clipboard::sync::get_clipboard_text() {
+                            let _ = engine
+                                .send_to_peer(
+                                    peer_id,
+                                    Message::ClipboardUpdate {
+                                        content: ClipboardContent::Text(text),
+                                    },
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
             if let Message::Key(ref ke) = msg {
-                crate::diag(format!("TX key sc=0x{:X} pressed={} → {}", ke.scancode, ke.pressed, &peer_id[..8]));
+                crate::diag(format!(
+                    "TX key sc=0x{:X} pressed={} → {}",
+                    ke.scancode,
+                    ke.pressed,
+                    &peer_id[..8]
+                ));
             }
             if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
                 log::warn!("Failed to forward input: {}", e);
@@ -58,22 +138,20 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>) {
     let mut last_known: Option<String> = clipboard::sync::get_clipboard_text();
 
     loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Some(new_text) = clipboard::sync::poll_clipboard_change(&last_known) {
-            last_known = Some(new_text.clone());
-
-            let focus = engine.get_focus().await;
-            if matches!(focus, FocusState::Local) {
-                let peers = engine.peers.lock().await;
-                for peer in peers.values() {
-                    let _ = peer
-                        .sender
-                        .send(Message::ClipboardUpdate {
-                            content: ClipboardContent::Text(new_text.clone()),
-                        })
-                        .await;
-                }
+        if let Some(new_text) = clipboard::sync::poll_clipboard_change(&mut last_known) {
+            // Broadcast to all connected peers regardless of focus state.
+            // This ensures that whichever machine you're currently controlling always
+            // has your latest clipboard content available for pasting.
+            let peers = engine.peers.lock().await;
+            for peer in peers.values() {
+                let _ = peer
+                    .sender
+                    .send(Message::ClipboardUpdate {
+                        content: ClipboardContent::Text(new_text.clone()),
+                    })
+                    .await;
             }
         }
     }

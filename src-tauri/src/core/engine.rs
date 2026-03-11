@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::core::config::{AppConfig, ScreenEdge};
-use crate::core::protocol::{Message, PeerId, ScreenInfo};
+use crate::core::protocol::{ClipboardContent, Message, PeerId, ScreenInfo};
 use crate::core::screen::{detect_edge, EdgeHit};
 use crate::file_transfer::receiver::FileReceiver;
 use crate::input::InputEvent;
@@ -63,6 +63,11 @@ pub enum UiEvent {
         id: String,
         name: String,
         address: String,
+    },
+    /// A camera frame received from a peer (base64-encoded JPEG).
+    CameraFrame {
+        peer_id: String,
+        data_b64: String,
     },
 }
 
@@ -215,6 +220,21 @@ impl Engine {
 
         crate::input::set_input_suppression(true);
         crate::diag(format!("Focus → remote {}", &peer_id[..peer_id.len().min(8)]));
+
+        // Push our local clipboard to the remote peer immediately so that Ctrl+V
+        // on the remote machine uses our clipboard content rather than its own.
+        if let Some(text) = crate::clipboard::sync::get_clipboard_text() {
+            let peers = self.peers.lock().await;
+            if let Some(peer) = peers.get(peer_id) {
+                let _ = peer
+                    .sender
+                    .send(Message::ClipboardUpdate {
+                        content: ClipboardContent::Text(text),
+                    })
+                    .await;
+            }
+        }
+
         let _ = self
             .ui_events
             .send(UiEvent::FocusChanged {
