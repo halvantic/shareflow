@@ -351,8 +351,12 @@ unsafe extern "system" fn keyboard_hook_proc(
         // Handle extended scancodes (arrow keys, Windows key, Right Ctrl/Alt, etc.)
         let mut scancode = data.scanCode as u16;
         if (data.flags.0 & 1) != 0 {
-            // LLKHF_EXTENDED flag — set bit 8 for our protocol
-            scancode |= 0x100;
+            // LLKHF_EXTENDED flag — set bit 8 for our protocol.
+            // Exclude Right Shift (sc=0x36): Windows sometimes sets LLKHF_EXTENDED
+            // for it, but it is NOT an extended key in the PS/2 protocol.
+            if scancode != 0x36 {
+                scancode |= 0x100;
+            }
         }
 
         // Win key (VK_LWIN=0x5B / VK_RWIN=0x5C) — must suppress both down AND

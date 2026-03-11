@@ -105,7 +105,7 @@ impl Engine {
                         // can cause focus to bounce back and forth continuously.
                         let last = self.last_switch_time.lock().await;
                         if let Some(t) = *last {
-                            if t.elapsed() < std::time::Duration::from_millis(250) {
+                            if t.elapsed() < std::time::Duration::from_millis(500) {
                                 return None;
                             }
                         }
@@ -157,22 +157,29 @@ impl Engine {
                     let peers = self.peers.lock().await;
                     if let Some(peer) = peers.get(&neighbor.peer_id) {
                         let target_screen = peer.screens.first()?;
+                        // Offset entry point inward by a few pixels so the cursor
+                        // doesn't start at the exact screen edge. Without this,
+                        // micro-jitter (±1px mouse sensor noise while typing)
+                        // after the cooldown expires can re-trigger edge detection
+                        // on the receiving machine, bouncing focus back and causing
+                        // keyboard events to stop flowing.
+                        const ENTRY_INSET: i32 = 5;
                         let (entry_x, entry_y) = match edge_hit {
                             EdgeHit::Right => (
-                                target_screen.x,
+                                target_screen.x + ENTRY_INSET,
                                 target_screen.y + (ratio * target_screen.height as f64) as i32,
                             ),
                             EdgeHit::Left => (
-                                target_screen.x + target_screen.width - 1,
+                                target_screen.x + target_screen.width - 1 - ENTRY_INSET,
                                 target_screen.y + (ratio * target_screen.height as f64) as i32,
                             ),
                             EdgeHit::Bottom => (
                                 target_screen.x + (ratio * target_screen.width as f64) as i32,
-                                target_screen.y,
+                                target_screen.y + ENTRY_INSET,
                             ),
                             EdgeHit::Top => (
                                 target_screen.x + (ratio * target_screen.width as f64) as i32,
-                                target_screen.y + target_screen.height - 1,
+                                target_screen.y + target_screen.height - 1 - ENTRY_INSET,
                             ),
                         };
 

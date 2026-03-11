@@ -407,6 +407,7 @@ fn scancode_to_mac_vk(sc: u16) -> Option<u16> {
         0x38 => Some(0x3A), // Left Alt -> Left Option
         0x1D => Some(0x3B), // Left Control
         0x36 => Some(0x3C), // Right Shift
+        0x136 => Some(0x3C), // Right Shift (with erroneous extended flag)
         0x138 => Some(0x3D), // Right Alt -> Right Option
         0x11D => Some(0x3E), // Right Control
         0x53 => Some(0x41), // Keypad .
