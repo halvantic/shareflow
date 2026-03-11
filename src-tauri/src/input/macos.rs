@@ -1,6 +1,8 @@
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use super::{InputCapture, InputEvent, InputInjector};
 use crate::core::protocol::{
@@ -149,6 +151,17 @@ const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x00040000;
 const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x00080000; // Option/Alt
 const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x00100000;
 const KCG_EVENT_FLAG_MASK_ALPHA_SHIFT: u64 = 0x00010000; // Caps Lock
+
+// NX device-dependent modifier flags (lower 16 bits of CGEventFlags).
+// These distinguish left vs right modifier keys.
+const NX_DEVICELCTLKEYMASK: u64 = 0x00000001;
+const NX_DEVICELSHIFTKEYMASK: u64 = 0x00000002;
+const NX_DEVICERSHIFTKEYMASK: u64 = 0x00000004;
+const NX_DEVICELCMDKEYMASK: u64 = 0x00000008;
+const NX_DEVICERCMDKEYMASK: u64 = 0x00000010;
+const NX_DEVICELALTKEYMASK: u64 = 0x00000020;
+const NX_DEVICERALTKEYMASK: u64 = 0x00000040;
+const NX_DEVICERCTLKEYMASK: u64 = 0x00002000;
 
 type CGEventTapCallBack = extern "C" fn(
     proxy: CGEventTapProxy,
@@ -442,6 +455,27 @@ fn scancode_to_mac_vk(sc: u16) -> Option<u16> {
 
 /// Track previous modifier flags for detecting individual modifier key changes.
 static PREV_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cumulative modifier flags for injected modifier keys.
+/// Updated on each modifier inject so that concurrently held modifiers
+/// (e.g. Shift+Ctrl) are correctly represented in the flags field.
+static INJECTED_MOD_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Map macOS virtual keycode to (device-independent flag, device-dependent flag).
+/// Returns None for non-modifier keys.
+fn modifier_flags_for_vk(vk: u16) -> Option<(u64, u64)> {
+    match vk {
+        0x38 => Some((KCG_EVENT_FLAG_MASK_SHIFT, NX_DEVICELSHIFTKEYMASK)),     // Left Shift
+        0x3C => Some((KCG_EVENT_FLAG_MASK_SHIFT, NX_DEVICERSHIFTKEYMASK)),     // Right Shift
+        0x3B => Some((KCG_EVENT_FLAG_MASK_CONTROL, NX_DEVICELCTLKEYMASK)),     // Left Control
+        0x3E => Some((KCG_EVENT_FLAG_MASK_CONTROL, NX_DEVICERCTLKEYMASK)),     // Right Control
+        0x3A => Some((KCG_EVENT_FLAG_MASK_ALTERNATE, NX_DEVICELALTKEYMASK)),   // Left Option
+        0x3D => Some((KCG_EVENT_FLAG_MASK_ALTERNATE, NX_DEVICERALTKEYMASK)),   // Right Option
+        0x37 => Some((KCG_EVENT_FLAG_MASK_COMMAND, NX_DEVICELCMDKEYMASK)),     // Left Command
+        0x36 => Some((KCG_EVENT_FLAG_MASK_COMMAND, NX_DEVICERCMDKEYMASK)),     // Right Command
+        _ => None,
+    }
+}
 
 /// Last known cursor position, updated by move_mouse() and the event tap callback.
 /// Used by press_mouse_button() instead of a dummy CGEvent (which returns 0,0).
@@ -778,6 +812,70 @@ impl InputCapture for MacOSInputCapture {
 /// We prime it by posting a harmless Shift key down+up on first use.
 static KEYBOARD_PRIMED: AtomicBool = AtomicBool::new(false);
 
+/// Multi-click tracking state for detecting double/triple clicks.
+/// macOS synthetic CGEvents must have kCGMouseEventClickState set explicitly;
+/// the OS does not auto-detect multi-clicks from timing on injected events.
+struct ClickState {
+    last_button: Option<MouseButton>,
+    last_press_time: Option<Instant>,
+    last_x: i32,
+    last_y: i32,
+    click_count: i64,
+}
+
+impl ClickState {
+    fn new() -> Self {
+        Self {
+            last_button: None,
+            last_press_time: None,
+            last_x: 0,
+            last_y: 0,
+            click_count: 0,
+        }
+    }
+
+    /// Compute click count for a new mouse-down event.
+    /// Increments if the same button is pressed within the double-click
+    /// time window (~500ms) and within a small distance, otherwise resets to 1.
+    fn press(&mut self, button: MouseButton, x: i32, y: i32) -> i64 {
+        const MULTI_CLICK_TIME_MS: u128 = 500;
+        const MULTI_CLICK_DIST: i32 = 5;
+
+        let now = Instant::now();
+        let same_button = self.last_button == Some(button);
+        let within_time = self
+            .last_press_time
+            .map(|t| now.duration_since(t).as_millis() < MULTI_CLICK_TIME_MS)
+            .unwrap_or(false);
+        let within_distance = (x - self.last_x).abs() <= MULTI_CLICK_DIST
+            && (y - self.last_y).abs() <= MULTI_CLICK_DIST;
+
+        if same_button && within_time && within_distance {
+            self.click_count += 1;
+        } else {
+            self.click_count = 1;
+        }
+
+        self.last_button = Some(button);
+        self.last_press_time = Some(now);
+        self.last_x = x;
+        self.last_y = y;
+
+        self.click_count
+    }
+
+    /// Return the current click count (for setting on mouse-up events).
+    fn current_count(&self) -> i64 {
+        self.click_count.max(1)
+    }
+}
+
+static CLICK_STATE: OnceLock<Mutex<ClickState>> = OnceLock::new();
+
+fn get_click_state() -> &'static Mutex<ClickState> {
+    CLICK_STATE.get_or_init(|| Mutex::new(ClickState::new()))
+}
+
 pub struct MacOSInputInjector;
 
 impl MacOSInputInjector {
@@ -926,10 +1024,20 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                // Set click count to 1 — some macOS apps ignore clicks with count=0
-                if pressed {
-                    CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
-                }
+                // Set click count for multi-click detection (double-click, triple-click).
+                // macOS requires this field set explicitly on synthetic events —
+                // it does NOT auto-detect multi-clicks from timing on CGEventPost'd events.
+                let click_count = {
+                    let state = get_click_state();
+                    let mut cs = state.lock().unwrap();
+                    if pressed {
+                        cs.press(button, pos.x as i32, pos.y as i32)
+                    } else {
+                        // mouse-up must carry the same click count as the preceding mouse-down
+                        cs.current_count()
+                    }
+                };
+                CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, click_count);
                 // For Other-type mouse buttons, explicitly set the button number field
                 if cg_button >= 2 {
                     CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER, cg_button as i64);
@@ -996,11 +1104,24 @@ impl InputInjector for MacOSInputInjector {
             return self.inject_caps_lock(pressed);
         }
 
+        // Modifier keys (Shift, Control, Option, Command) use
+        // kCGEventFlagsChanged on macOS, not regular key down/up.
+        // Without this, apps ignore the modifier state entirely.
+        if modifier_flags_for_vk(mac_vk).is_some() {
+            return self.inject_modifier(mac_vk, pressed);
+        }
+
         unsafe {
             let source = create_event_source();
             let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                // Apply currently held modifier flags so modified key combos
+                // (e.g. Shift+A) carry the correct flag state.
+                let mod_flags = INJECTED_MOD_FLAGS.load(Ordering::SeqCst);
+                if mod_flags != 0 {
+                    CGEventSetFlags(event, mod_flags);
+                }
                 CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             } else {
@@ -1015,6 +1136,56 @@ impl InputInjector for MacOSInputInjector {
 }
 
 impl MacOSInputInjector {
+    /// Inject a modifier key (Shift, Control, Option, Command) as a
+    /// kCGEventFlagsChanged event. macOS apps expect modifiers to arrive
+    /// as flag-change events — regular key down/up events are ignored for
+    /// modifier keys by most Cocoa applications.
+    fn inject_modifier(&self, mac_vk: u16, pressed: bool) -> Result<(), String> {
+        let (indep_flag, dep_flag) = modifier_flags_for_vk(mac_vk)
+            .expect("inject_modifier called for non-modifier vk");
+
+        // Update cumulative flags
+        let flags = if pressed {
+            INJECTED_MOD_FLAGS.fetch_or(indep_flag | dep_flag, Ordering::SeqCst)
+                | indep_flag | dep_flag
+        } else {
+            // Clear the device-dependent flag. Only clear the device-independent
+            // flag if no other key sharing it is still held (e.g. Left Shift
+            // released while Right Shift is still down).
+            let after_dep = INJECTED_MOD_FLAGS.fetch_and(!(dep_flag), Ordering::SeqCst) & !(dep_flag);
+            // Check if any device-dependent bit for the same modifier family remains.
+            let still_held = match indep_flag {
+                KCG_EVENT_FLAG_MASK_SHIFT => after_dep & (NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK) != 0,
+                KCG_EVENT_FLAG_MASK_CONTROL => after_dep & (NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK) != 0,
+                KCG_EVENT_FLAG_MASK_ALTERNATE => after_dep & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK) != 0,
+                KCG_EVENT_FLAG_MASK_COMMAND => after_dep & (NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK) != 0,
+                _ => false,
+            };
+            if !still_held {
+                INJECTED_MOD_FLAGS.fetch_and(!(indep_flag), Ordering::SeqCst);
+            }
+            INJECTED_MOD_FLAGS.load(Ordering::SeqCst)
+        };
+
+        unsafe {
+            let source = create_event_source();
+            let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
+            if !event.is_null() {
+                CGEventSetType(event, KCG_EVENT_FLAGS_CHANGED);
+                CGEventSetFlags(event, flags);
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CFRelease(event);
+            } else {
+                log::error!("CGEventCreateKeyboardEvent returned null for modifier vk=0x{:X}", mac_vk);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+        }
+        Ok(())
+    }
+
     /// Inject Caps Lock toggle using a kCGEventFlagsChanged event.
     /// On macOS, Caps Lock doesn't use normal key down/up — it toggles via
     /// a flags-changed event with the alpha-shift bit set/cleared.

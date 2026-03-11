@@ -3721,6 +3721,7 @@ name = "shareflow"
 version = "1.12.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "bincode",
  "core-foundation",
  "core-graphics 0.24.0",
