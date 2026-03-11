@@ -3,7 +3,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
-use crate::core::engine::Engine;
+use crate::core::engine::{Engine, FocusState};
 use crate::core::protocol::Message;
 use crate::core::screen::get_screens;
 use crate::network::connection::PeerConnection;
@@ -152,6 +152,15 @@ async fn handle_peer_session(
     while let Some(msg) = conn.incoming.recv().await {
         match msg {
             Message::MouseMove(mut mv) => {
+                // Only inject received input when we have local focus (being
+                // controlled by the remote peer). If focus is Remote, these
+                // are stale in-flight events that arrived after an edge switch.
+                // Without this guard, they get forwarded back via
+                // handle_local_input's Remote branch, creating a feedback loop
+                // of bouncing coordinates between the two machines.
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
                 // Coalesce: drain any queued mouse moves and jump to the latest
                 // position. This avoids processing stale positions when events
                 // arrive in bursts over the network.
@@ -199,16 +208,25 @@ async fn handle_peer_session(
                 }
             }
             Message::MouseButton(mb) => {
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
                 if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
                     log::error!("Mouse button injection failed: {}", e);
                 }
             }
             Message::MouseScroll(ms) => {
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
                 if let Err(e) = injector.scroll(ms.dx, ms.dy) {
                     log::error!("Scroll injection failed: {}", e);
                 }
             }
             Message::Key(ke) => {
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
                 crate::diag(format!("RX key sc=0x{:X} pressed={}", ke.scancode, ke.pressed));
                 if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
                     log::error!("Key injection failed: {}", e);
