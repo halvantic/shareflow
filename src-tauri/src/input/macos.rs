@@ -26,6 +26,11 @@ static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::
 static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
 static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1080);
 
+/// Anchor position to lock the local cursor when suppressed.
+/// The cursor is warped back here on every mouse move to prevent visible movement.
+static ANCHOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static ANCHOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 // CGEvent delta fields
 const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
 const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
@@ -44,6 +49,19 @@ const KCG_EVENT_SOURCE_STATE_COMBINED_SESSION: i32 = 0;
 const KCG_EVENT_SOURCE_STATE_HID_SYSTEM: i32 = 1;
 
 pub fn set_suppress(suppress: bool) {
+    if suppress {
+        // Capture current cursor position as the anchor point.
+        // The cursor will be warped back here on every move while suppressed.
+        unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            if !event.is_null() {
+                let loc = CGEventGetLocation(event);
+                ANCHOR_X.store(loc.x as i32, Ordering::SeqCst);
+                ANCHOR_Y.store(loc.y as i32, Ordering::SeqCst);
+                CFRelease(event);
+            }
+        }
+    }
     SUPPRESS.store(suppress, Ordering::SeqCst);
 }
 
@@ -484,6 +502,16 @@ extern "C" fn event_tap_callback(
                             y: vy,
                         }));
                     }
+                    // Warp the cursor back to the anchor point to prevent
+                    // visible movement on the local Mac screen. Returning
+                    // null_mut() alone only prevents app delivery — the
+                    // HID-level cursor has already moved visually.
+                    let ax = ANCHOR_X.load(Ordering::SeqCst);
+                    let ay = ANCHOR_Y.load(Ordering::SeqCst);
+                    CGWarpMouseCursorPosition(CGPoint {
+                        x: ax as f64,
+                        y: ay as f64,
+                    });
                     return std::ptr::null_mut();
                 }
                 let loc = CGEventGetLocation(event);
