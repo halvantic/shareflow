@@ -7,9 +7,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     VIRTUAL_KEY,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
-    MOUSEEVENTF_XUP, MOUSEINPUT,
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
@@ -457,22 +457,40 @@ impl InputInjector for WindowsInputInjector {
         Ok(())
     }
 
-    fn scroll(&self, _dx: i32, dy: i32) -> Result<(), String> {
+    fn scroll(&self, dx: i32, dy: i32) -> Result<(), String> {
         unsafe {
-            let input = INPUT {
-                r#type: INPUT_MOUSE,
-                Anonymous: INPUT_0 {
-                    mi: MOUSEINPUT {
-                        dx: 0,
-                        dy: 0,
-                        mouseData: dy as u32,
-                        dwFlags: MOUSEEVENTF_WHEEL,
-                        time: 0,
-                        dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+            if dy != 0 {
+                let input = INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dx: 0,
+                            dy: 0,
+                            mouseData: dy as u32,
+                            dwFlags: MOUSEEVENTF_WHEEL,
+                            time: 0,
+                            dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+                        },
                     },
-                },
-            };
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                };
+                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            }
+            if dx != 0 {
+                let input = INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dx: 0,
+                            dy: 0,
+                            mouseData: dx as u32,
+                            dwFlags: MOUSEEVENTF_HWHEEL,
+                            time: 0,
+                            dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+                        },
+                    },
+                };
+                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            }
         }
         Ok(())
     }

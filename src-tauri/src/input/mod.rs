@@ -4,6 +4,9 @@ pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 use crate::core::protocol::{KeyEvent, MouseButton, MouseButtonEvent, MouseMoveEvent, MouseScrollEvent};
 
 /// Trait for capturing input events from the local machine.
@@ -42,6 +45,10 @@ pub fn create_capture() -> Box<dyn InputCapture> {
     {
         Box::new(macos::MacOSInputCapture::new())
     }
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::LinuxInputCapture::new())
+    }
 }
 
 /// Create platform-specific input injector.
@@ -53,6 +60,10 @@ pub fn create_injector() -> Box<dyn InputInjector> {
     #[cfg(target_os = "macos")]
     {
         Box::new(macos::MacOSInputInjector::new())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::LinuxInputInjector::new())
     }
 }
 
@@ -66,6 +77,10 @@ pub fn set_input_suppression(suppress: bool) {
     {
         macos::set_suppress(suppress);
     }
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_suppress(suppress);
+    }
 }
 
 /// Initialize remote mouse control with the entry point on the remote screen.
@@ -78,6 +93,10 @@ pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, r
     #[cfg(target_os = "macos")]
     {
         macos::init_remote_mouse(virtual_x, virtual_y, rs_x, rs_y, rs_w, rs_h);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::init_remote_mouse(virtual_x, virtual_y, rs_x, rs_y, rs_w, rs_h);
     }
 }
 
@@ -101,4 +120,13 @@ pub fn create_capture_with_channel() -> (
     Option<std::sync::mpsc::Receiver<InputEvent>>,
 ) {
     macos::MacOSInputCapture::new_with_channel()
+}
+
+/// Create capture and return the event receiver channel (Linux).
+#[cfg(target_os = "linux")]
+pub fn create_capture_with_channel() -> (
+    linux::LinuxInputCapture,
+    Option<std::sync::mpsc::Receiver<InputEvent>>,
+) {
+    linux::LinuxInputCapture::new_with_channel()
 }

@@ -438,7 +438,12 @@ fn scancode_to_mac_vk(sc: u16) -> Option<u16> {
 // --- Event Tap Callback ---
 
 /// Track previous modifier flags for detecting individual modifier key changes.
-static mut PREV_FLAGS: u64 = 0;
+static PREV_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Last known cursor position, updated by move_mouse() and the event tap callback.
+/// Used by press_mouse_button() instead of a dummy CGEvent (which returns 0,0).
+static LAST_CURSOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static LAST_CURSOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 extern "C" fn event_tap_callback(
     _proxy: CGEventTapProxy,
@@ -448,10 +453,8 @@ extern "C" fn event_tap_callback(
 ) -> CGEventRef {
     // Re-enable tap if it was disabled by timeout
     if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT {
-        unsafe {
-            if let Some(tap) = TAP_REF.as_ref() {
-                CGEventTapEnable(*tap, true);
-            }
+        if let Some(tap) = TAP_REF.get() {
+            unsafe { CGEventTapEnable(tap.0, true); }
         }
         return event;
     }
@@ -515,6 +518,8 @@ extern "C" fn event_tap_callback(
                     return std::ptr::null_mut();
                 }
                 let loc = CGEventGetLocation(event);
+                LAST_CURSOR_X.store(loc.x as i32, Ordering::SeqCst);
+                LAST_CURSOR_Y.store(loc.y as i32, Ordering::SeqCst);
                 let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
                     x: loc.x as i32,
                     y: loc.y as i32,
@@ -613,10 +618,10 @@ extern "C" fn event_tap_callback(
                     0x3A | 0x3D => (flags & KCG_EVENT_FLAG_MASK_ALTERNATE) != 0,
                     0x37 | 0x36 => (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0,
                     0x39 => (flags & 0x00010000) != 0, // Caps Lock
-                    _ => flags > PREV_FLAGS,
+                    _ => flags > PREV_FLAGS.load(Ordering::SeqCst),
                 };
 
-                PREV_FLAGS = flags;
+                PREV_FLAGS.store(flags, Ordering::SeqCst);
                 let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
             }
 
@@ -632,8 +637,15 @@ extern "C" fn event_tap_callback(
     }
 }
 
+/// Wrapper to allow CFMachPortRef (a raw pointer) in a static OnceLock.
+/// Safety: The event tap is created once on a single thread and only read
+/// afterwards (to re-enable after timeout), so this is safe in practice.
+struct TapRef(CFMachPortRef);
+unsafe impl Send for TapRef {}
+unsafe impl Sync for TapRef {}
+
 /// Global reference to the event tap for re-enabling after timeout.
-static mut TAP_REF: Option<CFMachPortRef> = None;
+static TAP_REF: OnceLock<TapRef> = OnceLock::new();
 
 // --- Input Capture ---
 
@@ -714,7 +726,7 @@ unsafe fn run_event_tap() {
     }
 
     // Store tap reference for re-enabling after timeout
-    TAP_REF = Some(tap);
+    let _ = TAP_REF.set(TapRef(tap));
 
     let run_loop_source =
         CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
@@ -794,6 +806,9 @@ unsafe fn create_event_source() -> *mut c_void {
 
 impl InputInjector for MacOSInputInjector {
     fn move_mouse(&self, x: i32, y: i32) -> Result<(), String> {
+        // Update tracked cursor position for press_mouse_button
+        LAST_CURSOR_X.store(x, Ordering::SeqCst);
+        LAST_CURSOR_Y.store(y, Ordering::SeqCst);
         unsafe {
             let point = CGPoint {
                 x: x as f64,
@@ -836,15 +851,13 @@ impl InputInjector for MacOSInputInjector {
         pressed: bool,
     ) -> Result<(), String> {
         unsafe {
-            // Get actual current cursor position using a generic event
             let source = create_event_source();
-            let dummy = CGEventCreate(source);
-            let pos = if !dummy.is_null() {
-                let p = CGEventGetLocation(dummy);
-                CFRelease(dummy);
-                p
-            } else {
-                CGPoint { x: 0.0, y: 0.0 }
+            // Use tracked cursor position instead of a dummy CGEvent
+            // (CGEventGetLocation on a newly-created event returns the position
+            // passed to CGEventCreate, not the actual cursor position).
+            let pos = CGPoint {
+                x: LAST_CURSOR_X.load(Ordering::SeqCst) as f64,
+                y: LAST_CURSOR_Y.load(Ordering::SeqCst) as f64,
             };
 
             let (event_type, cg_button) = match (button, pressed) {
