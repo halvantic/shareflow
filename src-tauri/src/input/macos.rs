@@ -148,6 +148,7 @@ const KCG_EVENT_FLAG_MASK_SHIFT: u64 = 0x00020000;
 const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x00040000;
 const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x00080000; // Option/Alt
 const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x00100000;
+const KCG_EVENT_FLAG_MASK_ALPHA_SHIFT: u64 = 0x00010000; // Caps Lock
 
 type CGEventTapCallBack = extern "C" fn(
     proxy: CGEventTapProxy,
@@ -204,6 +205,8 @@ extern "C" {
 
     fn CGEventCreate(source: *const c_void) -> CGEventRef;
     fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    fn CGEventSetType(event: CGEventRef, event_type: u32);
+    fn CGEventSetFlags(event: CGEventRef, flags: u64);
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CGEventSourceCreate(state_id: i32) -> *mut c_void;
     fn CFRelease(cf: *const c_void);
@@ -769,6 +772,12 @@ impl InputCapture for MacOSInputCapture {
 
 // --- Input Injection ---
 
+/// Whether the HID keyboard system has been primed with a warm-up event.
+/// On macOS, CGEventPost to the HID tap can silently drop the first few
+/// keyboard events if no physical keyboard activity has occurred since boot.
+/// We prime it by posting a harmless Shift key down+up on first use.
+static KEYBOARD_PRIMED: AtomicBool = AtomicBool::new(false);
+
 pub struct MacOSInputInjector;
 
 impl MacOSInputInjector {
@@ -783,8 +792,37 @@ impl MacOSInputInjector {
             );
         } else {
             log::info!("Accessibility permission verified for input injection");
+            // Prime the keyboard immediately at injector creation.
+            Self::prime_keyboard();
         }
         Self
+    }
+
+    /// Send a harmless Shift key down+up to warm the HID keyboard event pipeline.
+    fn prime_keyboard() {
+        if KEYBOARD_PRIMED.swap(true, Ordering::SeqCst) {
+            return; // Already primed
+        }
+        unsafe {
+            let source = create_event_source();
+            // Shift key (vk 0x38) — produces no visible output.
+            let down = CGEventCreateKeyboardEvent(source, 0x38, true);
+            if !down.is_null() {
+                CGEventSetIntegerValueField(down, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, down);
+                CFRelease(down);
+            }
+            let up = CGEventCreateKeyboardEvent(source, 0x38, false);
+            if !up.is_null() {
+                CGEventSetIntegerValueField(up, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, up);
+                CFRelease(up);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+            log::info!("HID keyboard primed with warm-up event");
+        }
     }
 }
 
@@ -950,20 +988,64 @@ impl InputInjector for MacOSInputInjector {
             scancode, mac_vk, pressed
         );
 
+        // Caps Lock (vk 0x39) requires special handling on macOS:
+        // It uses kCGEventFlagsChanged (type 12) with the alpha-shift flag,
+        // not regular key down/up events. Without this, Caps Lock acts as a
+        // held modifier instead of a latching toggle.
+        if mac_vk == 0x39 {
+            return self.inject_caps_lock(pressed);
+        }
+
         unsafe {
-            // Use CombinedSession source for keyboard — more reliable than HIDSystem
-            // when no physical keyboard activity has occurred on this Mac yet.
-            let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+            let source = create_event_source();
             let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
-                // Post to session tap (not HID tap). Session-level injection is
-                // more reliable — it doesn't require a fully warmed HID state and
-                // avoids the "need to wake keyboard first" issue.
-                CGEventPost(KCG_SESSION_EVENT_TAP, event);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             } else {
                 log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl MacOSInputInjector {
+    /// Inject Caps Lock toggle using a kCGEventFlagsChanged event.
+    /// On macOS, Caps Lock doesn't use normal key down/up — it toggles via
+    /// a flags-changed event with the alpha-shift bit set/cleared.
+    /// We only act on key-down (pressed=true) and perform a full toggle cycle,
+    /// since Windows sends separate down/up but macOS toggles on a single event.
+    fn inject_caps_lock(&self, pressed: bool) -> Result<(), String> {
+        // Only toggle on key-down; ignore key-up to avoid double-toggling.
+        if !pressed {
+            return Ok(());
+        }
+
+        unsafe {
+            let source = create_event_source();
+            // Create a keyboard event for Caps Lock (vk 0x39), then change its
+            // type to kCGEventFlagsChanged and set the alpha-shift flag.
+            let down = CGEventCreateKeyboardEvent(source, 0x39, true);
+            if !down.is_null() {
+                CGEventSetType(down, KCG_EVENT_FLAGS_CHANGED);
+                CGEventSetFlags(down, KCG_EVENT_FLAG_MASK_ALPHA_SHIFT);
+                CGEventSetIntegerValueField(down, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, down);
+                CFRelease(down);
+            }
+            // Post the release (flags cleared) to complete the toggle cycle.
+            let up = CGEventCreateKeyboardEvent(source, 0x39, false);
+            if !up.is_null() {
+                CGEventSetType(up, KCG_EVENT_FLAGS_CHANGED);
+                CGEventSetFlags(up, 0);
+                CGEventSetIntegerValueField(up, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, up);
+                CFRelease(up);
             }
             if !source.is_null() {
                 CFRelease(source);

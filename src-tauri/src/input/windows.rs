@@ -16,8 +16,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::{InputCapture, InputEvent, InputInjector};
@@ -282,6 +282,10 @@ unsafe extern "system" fn mouse_hook_proc(
             WM_MOUSEWHEEL => {
                 let delta = (data.mouseData >> 16) as i16 as i32;
                 Some(InputEvent::MouseScroll(MouseScrollEvent { dx: 0, dy: delta }))
+            }
+            WM_MOUSEHWHEEL => {
+                let delta = (data.mouseData >> 16) as i16 as i32;
+                Some(InputEvent::MouseScroll(MouseScrollEvent { dx: delta, dy: 0 }))
             }
             WM_XBUTTONDOWN => {
                 let xbutton = (data.mouseData >> 16) as u16;
