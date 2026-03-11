@@ -20,6 +20,13 @@ pub struct Neighbor {
     pub screen_id: Option<String>,
 }
 
+/// A host that is trusted for auto-connect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedHost {
+    pub peer_id: String,
+    pub name: String,
+}
+
 /// Persisted application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -32,11 +39,27 @@ pub struct AppConfig {
     /// Port to listen on.
     pub port: u16,
 
+    /// Port used for LAN discovery broadcasts.
+    #[serde(default = "default_discovery_port")]
+    pub discovery_port: u16,
+
+    /// Automatically connect to trusted hosts when discovered.
+    #[serde(default)]
+    pub auto_connect: bool,
+
+    /// Hosts trusted for auto-connect.
+    #[serde(default)]
+    pub trusted_hosts: Vec<TrustedHost>,
+
     /// Configured screen neighbors.
     pub neighbors: Vec<Neighbor>,
 
     /// Known/trusted peer certificates (fingerprints).
     pub trusted_peers: Vec<TrustedPeer>,
+}
+
+fn default_discovery_port() -> u16 {
+    24801
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +75,9 @@ impl Default for AppConfig {
             machine_name: hostname(),
             peer_id: uuid::Uuid::new_v4().to_string(),
             port: 24800,
+            discovery_port: 24801,
+            auto_connect: false,
+            trusted_hosts: Vec::new(),
             neighbors: Vec::new(),
             trusted_peers: Vec::new(),
         }

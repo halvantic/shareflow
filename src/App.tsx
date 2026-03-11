@@ -24,6 +24,9 @@ interface AppConfig {
   machine_name: string;
   peer_id: string;
   port: number;
+  discovery_port: number;
+  auto_connect: boolean;
+  trusted_hosts: { peer_id: string; name: string }[];
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
   trusted_peers: any[];
 }
@@ -80,6 +83,11 @@ function App() {
   const [appVersion, setAppVersion] = useState("");
   const [showDiag, setShowDiag] = useState(false);
   const [diagLines, setDiagLines] = useState<string[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsPort, setSettingsPort] = useState("");
+  const [settingsDiscoveryPort, setSettingsDiscoveryPort] = useState("");
+  const [settingsAutoConnect, setSettingsAutoConnect] = useState(false);
+  const [settingsMachineName, setSettingsMachineName] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const diagRef = useRef<HTMLDivElement>(null);
 
@@ -135,6 +143,10 @@ function App() {
     getVersion().then(setAppVersion);
     invoke<any>("get_config").then((cfg) => {
       setConfig(cfg);
+      setSettingsPort(String(cfg.port));
+      setSettingsDiscoveryPort(String(cfg.discovery_port || 24801));
+      setSettingsAutoConnect(cfg.auto_connect || false);
+      setSettingsMachineName(cfg.machine_name || "");
       addLog(
         `Machine: ${cfg.machine_name} (${cfg.peer_id.slice(0, 8)}...)`,
         "info"
@@ -332,6 +344,57 @@ function App() {
     }
   };
 
+  const handleSaveSettings = async () => {
+    const port = parseInt(settingsPort, 10);
+    const discoveryPort = parseInt(settingsDiscoveryPort, 10);
+    if (!port || port < 1 || port > 65535) {
+      addToast("Invalid port number", "error");
+      return;
+    }
+    if (!discoveryPort || discoveryPort < 1 || discoveryPort > 65535) {
+      addToast("Invalid discovery port", "error");
+      return;
+    }
+    try {
+      await invoke("update_settings", {
+        port,
+        discoveryPort,
+        autoConnect: settingsAutoConnect,
+        machineName: settingsMachineName,
+      });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      addLog("Settings saved (restart app for port changes to take effect)", "success");
+      addToast("Settings saved", "success");
+    } catch (e: any) {
+      addLog(`Save settings failed: ${e}`, "error");
+      addToast("Failed to save settings", "error");
+    }
+  };
+
+  const handleAddTrustedHost = async (peerId: string, name: string) => {
+    try {
+      await invoke("add_trusted_host", { peerId, name });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      addLog(`Added ${name} to trusted hosts`, "success");
+      addToast(`${name} trusted`, "success");
+    } catch (e: any) {
+      addLog(`Failed to add trusted host: ${e}`, "error");
+    }
+  };
+
+  const handleRemoveTrustedHost = async (peerId: string) => {
+    try {
+      await invoke("remove_trusted_host", { peerId });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      addLog("Removed from trusted hosts", "success");
+    } catch (e: any) {
+      addLog(`Failed to remove trusted host: ${e}`, "error");
+    }
+  };
+
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -390,6 +453,14 @@ function App() {
               ? `${peers.length} peer(s) connected`
               : "No peers connected"}
           </div>
+          <button
+            className="quit-btn"
+            onClick={() => setShowSettings((v) => !v)}
+            title="Settings"
+            style={{ marginRight: 4 }}
+          >
+            {showSettings ? "Close Settings" : "Settings"}
+          </button>
           <button
             className="quit-btn"
             onClick={() => invoke("quit_app")}
@@ -475,16 +546,28 @@ function App() {
                 <div key={d.id} className="machine-card discovered">
                   <div className="name">{d.name}</div>
                   <div className="info">{d.address}</div>
-                  <button
-                    onClick={() => handleConnect(d.address)}
-                    style={{
-                      marginTop: 6,
-                      fontSize: 10,
-                      padding: "3px 8px",
-                    }}
-                  >
-                    Connect
-                  </button>
+                  <div className="peer-actions" style={{ marginTop: 6 }}>
+                    <button
+                      onClick={() => handleConnect(d.address)}
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 8px",
+                      }}
+                    >
+                      Connect
+                    </button>
+                    {config?.trusted_hosts?.some((h) => h.peer_id === d.id) ? (
+                      <span style={{ fontSize: 10, color: "#4caf50" }}>Trusted</span>
+                    ) : (
+                      <button
+                        className="secondary"
+                        onClick={() => handleAddTrustedHost(d.id, d.name)}
+                        style={{ fontSize: 10, padding: "3px 8px" }}
+                      >
+                        Trust
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -513,6 +596,129 @@ function App() {
             <div className="focus-banner">
               Controlling remote PC — press Scroll Lock or click "Return
               Focus" to switch back
+            </div>
+          )}
+
+          {/* Settings Panel */}
+          {showSettings && (
+            <div className="section settings-panel">
+              <h2>Settings</h2>
+
+              <div className="settings-group">
+                <label className="settings-label">Machine Name</label>
+                <input
+                  type="text"
+                  value={settingsMachineName}
+                  onChange={(e) => setSettingsMachineName(e.target.value)}
+                  style={{ width: 220 }}
+                />
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label">Server Port</label>
+                <input
+                  type="text"
+                  value={settingsPort}
+                  onChange={(e) => setSettingsPort(e.target.value.replace(/\D/g, ""))}
+                  style={{ width: 100 }}
+                  placeholder="24800"
+                />
+                <span className="settings-hint">Port for peer connections (default: 24800)</span>
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label">Discovery Port</label>
+                <input
+                  type="text"
+                  value={settingsDiscoveryPort}
+                  onChange={(e) => setSettingsDiscoveryPort(e.target.value.replace(/\D/g, ""))}
+                  style={{ width: 100 }}
+                  placeholder="24801"
+                />
+                <span className="settings-hint">UDP port for LAN discovery broadcasts (default: 24801)</span>
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settingsAutoConnect}
+                    onChange={(e) => setSettingsAutoConnect(e.target.checked)}
+                  />
+                  Auto-Connect to Trusted Hosts
+                </label>
+                <span className="settings-hint">
+                  Automatically connect when a trusted host is discovered on the network
+                </span>
+              </div>
+
+              <button onClick={handleSaveSettings} style={{ marginTop: 8, marginBottom: 16 }}>
+                Save Settings
+              </button>
+              <span className="settings-hint" style={{ marginLeft: 12 }}>
+                Port changes require app restart
+              </span>
+
+              {/* Trusted Hosts */}
+              <div style={{ marginTop: 20 }}>
+                <h3 style={{ fontSize: 14, color: "#e94560", marginBottom: 10 }}>
+                  Trusted Hosts
+                </h3>
+                <p className="settings-hint" style={{ marginBottom: 10 }}>
+                  Peers in this list will be auto-connected when discovered (if enabled above).
+                  Add peers from the "Discovered on LAN" sidebar or from connected peers below.
+                </p>
+
+                {config?.trusted_hosts && config.trusted_hosts.length > 0 ? (
+                  <div className="trusted-hosts-list">
+                    {config.trusted_hosts.map((host) => (
+                      <div key={host.peer_id} className="trusted-host-item">
+                        <div>
+                          <span className="trusted-host-name">{host.name}</span>
+                          <span className="trusted-host-id">{host.peer_id.slice(0, 12)}...</span>
+                        </div>
+                        <button
+                          className="secondary"
+                          onClick={() => handleRemoveTrustedHost(host.peer_id)}
+                          style={{ fontSize: 10, padding: "3px 8px" }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#555" }}>No trusted hosts configured.</div>
+                )}
+
+                {/* Add connected peers to trusted list */}
+                {peers.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <span style={{ fontSize: 12, color: "#888" }}>Add connected peer:</span>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                      {peers
+                        .filter((p) => !config?.trusted_hosts?.some((h) => h.peer_id === p.id))
+                        .map((p) => (
+                          <button
+                            key={p.id}
+                            className="secondary"
+                            onClick={() => handleAddTrustedHost(p.id, p.name)}
+                            style={{ fontSize: 10, padding: "3px 8px" }}
+                          >
+                            + {p.name}
+                          </button>
+                        ))}
+                      {peers.every((p) =>
+                        config?.trusted_hosts?.some((h) => h.peer_id === p.id)
+                      ) && (
+                        <span style={{ fontSize: 11, color: "#555" }}>
+                          All connected peers are already trusted
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

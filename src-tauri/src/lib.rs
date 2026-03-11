@@ -307,6 +307,53 @@ fn quit_app() {
 }
 
 #[tauri::command]
+async fn update_settings(
+    state: tauri::State<'_, AppState>,
+    port: u16,
+    discovery_port: u16,
+    auto_connect: bool,
+    machine_name: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.port = port;
+    config.discovery_port = discovery_port;
+    config.auto_connect = auto_connect;
+    if !machine_name.is_empty() {
+        config.machine_name = machine_name;
+    }
+    config.save();
+    Ok(())
+}
+
+#[tauri::command]
+async fn add_trusted_host(
+    state: tauri::State<'_, AppState>,
+    peer_id: String,
+    name: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    if !config.trusted_hosts.iter().any(|h| h.peer_id == peer_id) {
+        config.trusted_hosts.push(crate::core::config::TrustedHost {
+            peer_id,
+            name,
+        });
+        config.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_trusted_host(
+    state: tauri::State<'_, AppState>,
+    peer_id: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.trusted_hosts.retain(|h| h.peer_id != peer_id);
+    config.save();
+    Ok(())
+}
+
+#[tauri::command]
 async fn send_file_to_peer(
     state: tauri::State<'_, AppState>,
     peer_id: String,
@@ -529,6 +576,124 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+/// Auto-connect to a peer (reuses connection logic from connect_to_peer_cmd).
+async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<String, String> {
+    let tls_config = network::tls::make_client_config()?;
+    let mut conn = network::connection::connect_to_peer(address, tls_config).await?;
+
+    let config = engine.config.lock().await;
+    let our_peer_id = config.peer_id.clone();
+    let hello = crate::core::protocol::Message::Hello {
+        peer_id: config.peer_id.clone(),
+        name: config.machine_name.clone(),
+        screens: get_screens(),
+    };
+    drop(config);
+
+    conn.outgoing
+        .send(hello)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match conn.incoming.recv().await {
+        Some(crate::core::protocol::Message::HelloAck {
+            peer_id,
+            name,
+            screens,
+        })
+        | Some(crate::core::protocol::Message::Hello {
+            peer_id,
+            name,
+            screens,
+        }) => {
+            let ack = crate::core::protocol::Message::HelloAck {
+                peer_id: our_peer_id.clone(),
+                name: String::new(),
+                screens: get_screens(),
+            };
+            let _ = conn.outgoing.send(ack).await;
+
+            let (msg_tx, mut msg_rx) = mpsc::channel(256);
+            let peer = crate::core::engine::Peer {
+                id: peer_id.clone(),
+                name: name.clone(),
+                screens,
+                sender: msg_tx,
+            };
+            let result_name = name.clone();
+            let result_id = peer_id.clone();
+            engine.add_peer(peer).await;
+
+            let conn_outgoing = conn.outgoing.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = msg_rx.recv().await {
+                    if conn_outgoing.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let engine2 = engine.clone();
+            let remote_peer_id = peer_id.clone();
+            tokio::spawn(async move {
+                let injector = crate::input::create_injector();
+                while let Some(msg) = conn.incoming.recv().await {
+                    match msg {
+                        crate::core::protocol::Message::MouseMove(mv) => {
+                            let _ = injector.move_mouse(mv.x, mv.y);
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((pid, msg)) = engine2.handle_local_input(edge_event).await {
+                                if let Err(e) = engine2.send_to_peer(&pid, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
+                        }
+                        crate::core::protocol::Message::MouseButton(mb) => {
+                            let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                        }
+                        crate::core::protocol::Message::MouseScroll(ms) => {
+                            let _ = injector.scroll(ms.dx, ms.dy);
+                        }
+                        crate::core::protocol::Message::Key(ke) => {
+                            let _ = injector.send_key(ke.scancode, ke.pressed);
+                        }
+                        crate::core::protocol::Message::SwitchFocus {
+                            target_id,
+                            entry_x,
+                            entry_y,
+                        } => {
+                            if target_id == our_peer_id {
+                                let _ = injector.move_mouse(entry_x, entry_y);
+                                engine2.switch_to_local().await;
+                            }
+                        }
+                        crate::core::protocol::Message::ClipboardUpdate { content } => {
+                            crate::clipboard::sync::apply_remote_clipboard(content);
+                        }
+                        crate::core::protocol::Message::Ping => {
+                            let _ = conn
+                                .outgoing
+                                .send(crate::core::protocol::Message::Pong)
+                                .await;
+                        }
+                        msg @ crate::core::protocol::Message::FileStart { .. }
+                        | msg @ crate::core::protocol::Message::FileChunk { .. }
+                        | msg @ crate::core::protocol::Message::FileDone { .. }
+                        | msg @ crate::core::protocol::Message::FileCancel { .. } => {
+                            engine2.handle_file_message(msg).await;
+                        }
+                        _ => {}
+                    }
+                }
+                engine2.remove_peer(&remote_peer_id).await;
+            });
+
+            Ok(format!("Connected to {} ({})", result_name, result_id))
+        }
+        _ => Err("Unexpected response from peer".into()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -572,6 +737,9 @@ pub fn run() {
             send_file_to_peer,
             get_diagnostics,
             quit_app,
+            update_settings,
+            add_trusted_host,
+            remove_trusted_host,
         ])
         // On Windows, hide the window to tray when minimized or closed
         // instead of leaving it in the taskbar.
@@ -648,14 +816,17 @@ pub fn run() {
 
             // Start LAN auto-discovery.
             let engine_disc = engine.clone();
+            let app_handle_disc = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let config = engine_disc.config.lock().await;
                 let announcement = network::discovery::Announcement {
                     peer_id: config.peer_id.clone(),
                     name: config.machine_name.clone(),
                     port: config.port,
+                    discovery_port: config.discovery_port,
                 };
                 let own_peer_id = config.peer_id.clone();
+                let discovery_port = config.discovery_port;
                 drop(config);
 
                 // Broadcast our presence periodically
@@ -667,8 +838,9 @@ pub fn run() {
                 // Listen for peers in a blocking thread
                 let ui_events = engine_disc.ui_events.clone();
                 let peers = engine_disc.peers.clone();
+                let engine_auto = engine_disc.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = network::discovery::listen_for_peers(&own_peer_id, |ann, addr| {
+                    let _ = network::discovery::listen_for_peers(&own_peer_id, discovery_port, |ann, addr| {
                         let address = format!("{}:{}", addr.ip(), ann.port);
                         // Only emit if not already connected
                         let connected = {
@@ -687,7 +859,31 @@ pub fn run() {
                             let _ = ui.try_send(UiEvent::PeerDiscovered {
                                 id,
                                 name,
-                                address,
+                                address: address.clone(),
+                            });
+
+                            // Auto-connect if enabled and peer is trusted
+                            let engine_ac = engine_auto.clone();
+                            let app_handle_ac = app_handle_disc.clone();
+                            let peer_id = ann.peer_id.clone();
+                            let addr_clone = address.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let config = engine_ac.config.lock().await;
+                                let auto_connect = config.auto_connect;
+                                let is_trusted = config.trusted_hosts.iter().any(|h| h.peer_id == peer_id);
+                                drop(config);
+
+                                if auto_connect && is_trusted {
+                                    log::info!("Auto-connecting to trusted peer {} at {}", peer_id, addr_clone);
+                                    if let Some(state) = app_handle_ac.try_state::<AppState>() {
+                                        // Use the same logic as connect_to_peer_cmd
+                                        let result = auto_connect_to_peer(state.engine.clone(), &addr_clone).await;
+                                        match result {
+                                            Ok(msg) => log::info!("Auto-connect success: {}", msg),
+                                            Err(e) => log::warn!("Auto-connect failed: {}", e),
+                                        }
+                                    }
+                                }
                             });
                         }
                     });
