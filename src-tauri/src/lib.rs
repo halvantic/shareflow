@@ -7,18 +7,34 @@ mod network;
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent, Wry};
 use tokio::sync::mpsc;
 
 use crate::core::config::AppConfig;
 use crate::core::engine::{Engine, FocusState, UiEvent};
-use crate::core::hotkey::HotkeyDetector;
 use crate::core::screen::get_screens;
+
+// --- Diagnostic ring-buffer log ---
+use std::sync::Mutex;
+
+static DIAG_LOG: std::sync::LazyLock<Mutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Push a diagnostic message (kept in a ring buffer, max 200 entries).
+pub fn diag(msg: String) {
+    log::info!("{}", msg);
+    if let Ok(mut buf) = DIAG_LOG.lock() {
+        buf.push(msg);
+        let len = buf.len();
+        if len > 200 {
+            buf.drain(..len - 200);
+        }
+    }
+}
 
 /// Shared application state accessible from Tauri commands.
 struct AppState {
     engine: Arc<Engine>,
-    hotkey: Arc<HotkeyDetector>,
 }
 
 // --- Tauri Commands ---
@@ -114,15 +130,28 @@ async fn connect_to_peer_cmd(
                     match msg {
                         crate::core::protocol::Message::MouseMove(mv) => {
                             let _ = injector.move_mouse(mv.x, mv.y);
+                            // Check if the injected position hits a local edge for switching back.
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
-                            let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                            if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
+                                log::error!("Mouse button injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::MouseScroll(ms) => {
-                            let _ = injector.scroll(ms.dx, ms.dy);
+                            if let Err(e) = injector.scroll(ms.dx, ms.dy) {
+                                log::error!("Scroll injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::Key(ke) => {
-                            let _ = injector.send_key(ke.scancode, ke.pressed);
+                            if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
+                                log::error!("Key injection failed: {}", e);
+                            }
                         }
                         crate::core::protocol::Message::SwitchFocus {
                             target_id,
@@ -207,9 +236,16 @@ async fn switch_focus_to(
         entry_y,
     };
     peer.sender.send(msg).await.map_err(|e| e.to_string())?;
+    // Send an initial MouseMove so the Mac has cursor context before key events.
+    // Without this, CGEventPost keyboard injection can silently fail because
+    // macOS hasn't fully synced cursor/event state from the SwitchFocus warp.
+    let mouse_msg = crate::core::protocol::Message::MouseMove(
+        crate::core::protocol::MouseMoveEvent { x: entry_x, y: entry_y },
+    );
+    peer.sender.send(mouse_msg).await.map_err(|e| e.to_string())?;
     drop(peers);
 
-    state.engine.switch_to_remote(&peer_id).await;
+    state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
     Ok(())
 }
 
@@ -235,34 +271,86 @@ async fn set_neighbor(
     };
 
     let mut config = state.engine.config.lock().await;
-    config
-        .neighbors
-        .retain(|n| !(n.edge == screen_edge && n.screen_id == screen_id));
-    config.neighbors.push(crate::core::config::Neighbor {
-        peer_id,
-        edge: screen_edge,
-        screen_id,
+
+    // Toggle: if the exact same mapping exists, remove it (deselect)
+    let already_set = config.neighbors.iter().any(|n| {
+        n.peer_id == peer_id && n.edge == screen_edge && n.screen_id == screen_id
     });
+
+    if already_set {
+        config.neighbors.retain(|n| {
+            !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id == screen_id)
+        });
+    } else {
+        // Remove any other mapping for this edge+screen, then add new
+        config
+            .neighbors
+            .retain(|n| !(n.edge == screen_edge && n.screen_id == screen_id));
+        config.neighbors.push(crate::core::config::Neighbor {
+            peer_id,
+            edge: screen_edge,
+            screen_id,
+        });
+    }
     config.save();
     Ok(())
 }
 
 #[tauri::command]
-fn set_hotkey(state: tauri::State<'_, AppState>, scancodes: Vec<u16>) -> Result<(), String> {
-    state.hotkey.set_combo(scancodes.clone());
-
-    let engine = state.engine.clone();
-    tauri::async_runtime::block_on(async {
-        let mut config = engine.config.lock().await;
-        config.switch_hotkey = Some(scancodes);
-        config.save();
-    });
-    Ok(())
+fn get_diagnostics() -> Vec<String> {
+    DIAG_LOG.lock().map(|buf| buf.clone()).unwrap_or_default()
 }
 
 #[tauri::command]
 fn quit_app() {
     std::process::exit(0);
+}
+
+#[tauri::command]
+async fn update_settings(
+    state: tauri::State<'_, AppState>,
+    port: u16,
+    discovery_port: u16,
+    auto_connect: bool,
+    machine_name: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.port = port;
+    config.discovery_port = discovery_port;
+    config.auto_connect = auto_connect;
+    if !machine_name.is_empty() {
+        config.machine_name = machine_name;
+    }
+    config.save();
+    Ok(())
+}
+
+#[tauri::command]
+async fn add_trusted_host(
+    state: tauri::State<'_, AppState>,
+    peer_id: String,
+    name: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    if !config.trusted_hosts.iter().any(|h| h.peer_id == peer_id) {
+        config.trusted_hosts.push(crate::core::config::TrustedHost {
+            peer_id,
+            name,
+        });
+        config.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_trusted_host(
+    state: tauri::State<'_, AppState>,
+    peer_id: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.trusted_hosts.retain(|h| h.peer_id != peer_id);
+    config.save();
+    Ok(())
 }
 
 #[tauri::command]
@@ -304,40 +392,96 @@ async fn send_file_to_peer(
 
 // --- System tray setup ---
 
-fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItemBuilder::with_id("show", "Show ShareFlow").build(app)?;
-    let status = MenuItemBuilder::with_id("status", "Status: Local")
+/// Build a tray menu dynamically based on current peers and focus state.
+fn build_tray_menu(
+    app: &AppHandle<Wry>,
+    peer_names: &[(String, String)], // (peer_id, name)
+    focus: &FocusState,
+) -> Result<tauri::menu::Menu<Wry>, Box<dyn std::error::Error>> {
+    let status_text = match focus {
+        FocusState::Local => format!("Status: Local | {} peer(s)", peer_names.len()),
+        FocusState::Remote(id) => {
+            let name = peer_names.iter()
+                .find(|(pid, _)| pid == id)
+                .map(|(_, n)| n.as_str())
+                .unwrap_or("unknown");
+            format!("Status: Controlling {}", name)
+        }
+    };
+
+    let status = MenuItemBuilder::with_id("status", &status_text)
         .enabled(false)
         .build(app)?;
-    let toggle = MenuItemBuilder::with_id("toggle", "Toggle Focus (Scroll Lock)").build(app)?;
-    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let separator1 = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let show = MenuItemBuilder::with_id("show", "Show ShareFlow").build(app)?;
+    let separator2 = tauri::menu::PredefinedMenuItem::separator(app)?;
 
-    let menu = MenuBuilder::new(app)
-        .items(&[&status, &separator, &show, &toggle, &separator, &quit])
-        .build()?;
+    let mut builder = MenuBuilder::new(app);
+    builder = builder.items(&[&status, &separator1, &show, &separator2]);
+
+    // Add peer switch items
+    if !peer_names.is_empty() {
+        for (peer_id, name) in peer_names {
+            let is_active = matches!(focus, FocusState::Remote(id) if id == peer_id);
+            let label = if is_active {
+                format!("Return to Local (from {})", name)
+            } else {
+                format!("Switch to {}", name)
+            };
+            let item = MenuItemBuilder::with_id(
+                &format!("peer_{}", peer_id),
+                &label,
+            ).build(app)?;
+            builder = builder.item(&item);
+        }
+    } else {
+        let no_peers = MenuItemBuilder::with_id("no_peers", "No peers connected")
+            .enabled(false)
+            .build(app)?;
+        builder = builder.item(&no_peers);
+    }
+
+    let separator3 = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit ShareFlow").build(app)?;
+    builder = builder.items(&[&separator3, &quit]);
+
+    Ok(builder.build()?)
+}
+
+fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
+    let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local)?;
 
     let app_handle = app.handle().clone();
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().cloned().unwrap())
         .tooltip("ShareFlow - Keyboard & Mouse Sharing")
-        .menu(&menu)
+        .menu(&initial_menu)
         .on_menu_event(move |app, event| {
-            match event.id().as_ref() {
+            let id = event.id().0.to_string();
+            match id.as_str() {
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
+                        let _ = window.unminimize();
                         let _ = window.set_focus();
                     }
                 }
-                "toggle" => {
-                    let engine = engine.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let focus = engine.get_focus().await;
-                        match focus {
-                            FocusState::Local => {
+                "quit" => {
+                    std::process::exit(0);
+                }
+                _ if id.starts_with("peer_") => {
+                    let peer_id = id.strip_prefix("peer_").unwrap().to_string();
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let engine = state.engine.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let focus = engine.get_focus().await;
+                            if matches!(&focus, FocusState::Remote(id) if id == &peer_id) {
+                                // Already controlling this peer — switch back to local
+                                engine.switch_to_local().await;
+                            } else {
+                                // Switch to this peer
                                 let peers = engine.peers.lock().await;
-                                if let Some(peer) = peers.values().next() {
-                                    let peer_id = peer.id.clone();
+                                if let Some(peer) = peers.get(&peer_id) {
                                     let (ex, ey) = if let Some(s) = peer.screens.first() {
                                         (s.x + s.width / 2, s.y + s.height / 2)
                                     } else {
@@ -349,18 +493,17 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
                                         entry_y: ey,
                                     };
                                     let _ = peer.sender.send(msg).await;
+                                    // Send initial MouseMove to prime Mac's event stream
+                                    let mouse_msg = crate::core::protocol::Message::MouseMove(
+                                        crate::core::protocol::MouseMoveEvent { x: ex, y: ey },
+                                    );
+                                    let _ = peer.sender.send(mouse_msg).await;
                                     drop(peers);
-                                    engine.switch_to_remote(&peer_id).await;
+                                    engine.switch_to_remote(&peer_id, ex, ey).await;
                                 }
                             }
-                            FocusState::Remote(_) => {
-                                engine.switch_to_local().await;
-                            }
-                        }
-                    });
-                }
-                "quit" => {
-                    std::process::exit(0);
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -370,45 +513,60 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
+                    let _ = window.unminimize();
                     let _ = window.set_focus();
                 }
             }
         })
         .build(app)?;
 
-    // Spawn task to update tray menu status text when focus changes.
+    // Spawn task to update tray menu and tooltip when state changes.
     let app_handle2 = app_handle.clone();
-    let status_id = status.id().clone();
     tauri::async_runtime::spawn(async move {
-        let mut last_text = String::new();
+        let mut last_tooltip = String::new();
+        let mut last_peer_count: usize = 0;
+        let mut last_focus = FocusState::Local;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if let Some(state) = app_handle2.try_state::<AppState>() {
                 let focus = state.engine.get_focus().await;
                 let peers = state.engine.peers.lock().await;
                 let peer_count = peers.len();
-                let text = match &focus {
-                    FocusState::Local => {
-                        format!("Local | {} peer(s)", peer_count)
-                    }
+
+                // Collect peer info for menu
+                let peer_names: Vec<(String, String)> = peers
+                    .values()
+                    .map(|p| (p.id.clone(), p.name.clone()))
+                    .collect();
+
+                let tooltip = match &focus {
+                    FocusState::Local => format!("ShareFlow - Local | {} peer(s)", peer_count),
                     FocusState::Remote(id) => {
                         let name = peers
                             .get(id)
                             .map(|p| p.name.as_str())
                             .unwrap_or("unknown");
-                        format!("Remote: {} | {} peer(s)", name, peer_count)
+                        format!("ShareFlow - Controlling {}", name)
                     }
                 };
                 drop(peers);
-                if text != last_text {
-                    last_text = text.clone();
-                    // Update the status menu item text
-                    if let Some(item) = app_handle2.menu().and_then(|_| None::<tauri::menu::MenuItem<tauri::Wry>>) {
-                        let _ = item.set_text(&text);
-                    }
-                    // Update tooltip as a simpler approach
+
+                // Rebuild tray menu if state changed
+                if peer_count != last_peer_count || focus != last_focus {
+                    last_peer_count = peer_count;
+                    last_focus = focus.clone();
                     if let Some(tray) = app_handle2.tray_by_id("main") {
-                        let _ = tray.set_tooltip(Some(&format!("ShareFlow - {}", text)));
+                        if let Ok(menu) = build_tray_menu(&app_handle2, &peer_names, &focus) {
+                            let _ = tray.set_menu(Some(menu));
+                        }
+                    }
+                }
+
+                // Update tooltip
+                if tooltip != last_tooltip {
+                    last_tooltip = tooltip.clone();
+                    if let Some(tray) = app_handle2.tray_by_id("main") {
+                        let _ = tray.set_tooltip(Some(&tooltip));
                     }
                 }
             }
@@ -416,6 +574,124 @@ fn setup_tray(app: &tauri::App, engine: Arc<Engine>) -> Result<(), Box<dyn std::
     });
 
     Ok(())
+}
+
+/// Auto-connect to a peer (reuses connection logic from connect_to_peer_cmd).
+async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<String, String> {
+    let tls_config = network::tls::make_client_config()?;
+    let mut conn = network::connection::connect_to_peer(address, tls_config).await?;
+
+    let config = engine.config.lock().await;
+    let our_peer_id = config.peer_id.clone();
+    let hello = crate::core::protocol::Message::Hello {
+        peer_id: config.peer_id.clone(),
+        name: config.machine_name.clone(),
+        screens: get_screens(),
+    };
+    drop(config);
+
+    conn.outgoing
+        .send(hello)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match conn.incoming.recv().await {
+        Some(crate::core::protocol::Message::HelloAck {
+            peer_id,
+            name,
+            screens,
+        })
+        | Some(crate::core::protocol::Message::Hello {
+            peer_id,
+            name,
+            screens,
+        }) => {
+            let ack = crate::core::protocol::Message::HelloAck {
+                peer_id: our_peer_id.clone(),
+                name: String::new(),
+                screens: get_screens(),
+            };
+            let _ = conn.outgoing.send(ack).await;
+
+            let (msg_tx, mut msg_rx) = mpsc::channel(256);
+            let peer = crate::core::engine::Peer {
+                id: peer_id.clone(),
+                name: name.clone(),
+                screens,
+                sender: msg_tx,
+            };
+            let result_name = name.clone();
+            let result_id = peer_id.clone();
+            engine.add_peer(peer).await;
+
+            let conn_outgoing = conn.outgoing.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = msg_rx.recv().await {
+                    if conn_outgoing.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let engine2 = engine.clone();
+            let remote_peer_id = peer_id.clone();
+            tokio::spawn(async move {
+                let injector = crate::input::create_injector();
+                while let Some(msg) = conn.incoming.recv().await {
+                    match msg {
+                        crate::core::protocol::Message::MouseMove(mv) => {
+                            let _ = injector.move_mouse(mv.x, mv.y);
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((pid, msg)) = engine2.handle_local_input(edge_event).await {
+                                if let Err(e) = engine2.send_to_peer(&pid, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
+                        }
+                        crate::core::protocol::Message::MouseButton(mb) => {
+                            let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                        }
+                        crate::core::protocol::Message::MouseScroll(ms) => {
+                            let _ = injector.scroll(ms.dx, ms.dy);
+                        }
+                        crate::core::protocol::Message::Key(ke) => {
+                            let _ = injector.send_key(ke.scancode, ke.pressed);
+                        }
+                        crate::core::protocol::Message::SwitchFocus {
+                            target_id,
+                            entry_x,
+                            entry_y,
+                        } => {
+                            if target_id == our_peer_id {
+                                let _ = injector.move_mouse(entry_x, entry_y);
+                                engine2.switch_to_local().await;
+                            }
+                        }
+                        crate::core::protocol::Message::ClipboardUpdate { content } => {
+                            crate::clipboard::sync::apply_remote_clipboard(content);
+                        }
+                        crate::core::protocol::Message::Ping => {
+                            let _ = conn
+                                .outgoing
+                                .send(crate::core::protocol::Message::Pong)
+                                .await;
+                        }
+                        msg @ crate::core::protocol::Message::FileStart { .. }
+                        | msg @ crate::core::protocol::Message::FileChunk { .. }
+                        | msg @ crate::core::protocol::Message::FileDone { .. }
+                        | msg @ crate::core::protocol::Message::FileCancel { .. } => {
+                            engine2.handle_file_message(msg).await;
+                        }
+                        _ => {}
+                    }
+                }
+                engine2.remove_peer(&remote_peer_id).await;
+            });
+
+            Ok(format!("Connected to {} ({})", result_name, result_id))
+        }
+        _ => Err("Unexpected response from peer".into()),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -428,12 +704,6 @@ pub fn run() {
         config.peer_id,
         config.machine_name
     );
-
-    // Set up hotkey detector
-    let hotkey = Arc::new(HotkeyDetector::new());
-    if let Some(ref combo) = config.switch_hotkey {
-        hotkey.set_combo(combo.clone());
-    }
 
     let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(256);
     let engine = Arc::new(Engine::new(config, ui_tx));
@@ -451,7 +721,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             engine: engine.clone(),
-            hotkey: hotkey.clone(),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -465,10 +734,26 @@ pub fn run() {
             switch_focus_to,
             switch_focus_local,
             set_neighbor,
-            set_hotkey,
             send_file_to_peer,
+            get_diagnostics,
             quit_app,
+            update_settings,
+            add_trusted_host,
+            remove_trusted_host,
         ])
+        // On Windows, hide the window to tray when minimized or closed
+        // instead of leaving it in the taskbar.
+        .on_window_event(|_window, _event| {
+            #[cfg(target_os = "windows")]
+            match _event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    // Prevent actual close — hide to tray instead
+                    api.prevent_close();
+                    let _ = _window.hide();
+                }
+                _ => {}
+            }
+        })
         .setup(move |app| {
             let engine = engine.clone();
             let app_handle = app.handle().clone();
@@ -502,24 +787,25 @@ pub fn run() {
                 }
             });
 
-            // Start input capture and forwarding loop with hotkey detection.
+            // Start input capture and forwarding loop.
+            // Keep _capture alive for the lifetime of the app — dropping it
+            // detaches the hook thread which is fine but we avoid any edge cases.
             let engine_input = engine.clone();
-            let hotkey_input = hotkey.clone();
-            {
-                let (_capture, event_rx) = input::create_capture_with_channel();
-                if let Some(std_rx) = event_rx {
-                    let (async_tx, async_rx) = mpsc::channel(4096);
-                    core::runtime::start_event_bridge(std_rx, async_tx);
+            let (_capture, event_rx) = input::create_capture_with_channel();
+            if let Some(std_rx) = event_rx {
+                let (async_tx, async_rx) = mpsc::channel(4096);
+                core::runtime::start_event_bridge(std_rx, async_tx);
 
-                    tauri::async_runtime::spawn(async move {
-                        core::runtime::start_input_loop(
-                            engine_input,
-                            async_rx,
-                            hotkey_input,
-                        )
-                        .await;
-                    });
-                }
+                tauri::async_runtime::spawn(async move {
+                    core::runtime::start_input_loop(
+                        engine_input,
+                        async_rx,
+                    )
+                    .await;
+                });
+                diag("Input capture pipeline fully initialized".into());
+            } else {
+                log::error!("Failed to create input capture — no event receiver");
             }
 
             // Start clipboard sync.
@@ -530,14 +816,17 @@ pub fn run() {
 
             // Start LAN auto-discovery.
             let engine_disc = engine.clone();
+            let app_handle_disc = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let config = engine_disc.config.lock().await;
                 let announcement = network::discovery::Announcement {
                     peer_id: config.peer_id.clone(),
                     name: config.machine_name.clone(),
                     port: config.port,
+                    discovery_port: config.discovery_port,
                 };
                 let own_peer_id = config.peer_id.clone();
+                let discovery_port = config.discovery_port;
                 drop(config);
 
                 // Broadcast our presence periodically
@@ -549,8 +838,9 @@ pub fn run() {
                 // Listen for peers in a blocking thread
                 let ui_events = engine_disc.ui_events.clone();
                 let peers = engine_disc.peers.clone();
+                let engine_auto = engine_disc.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = network::discovery::listen_for_peers(&own_peer_id, |ann, addr| {
+                    let _ = network::discovery::listen_for_peers(&own_peer_id, discovery_port, |ann, addr| {
                         let address = format!("{}:{}", addr.ip(), ann.port);
                         // Only emit if not already connected
                         let connected = {
@@ -569,7 +859,31 @@ pub fn run() {
                             let _ = ui.try_send(UiEvent::PeerDiscovered {
                                 id,
                                 name,
-                                address,
+                                address: address.clone(),
+                            });
+
+                            // Auto-connect if enabled and peer is trusted
+                            let engine_ac = engine_auto.clone();
+                            let app_handle_ac = app_handle_disc.clone();
+                            let peer_id = ann.peer_id.clone();
+                            let addr_clone = address.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let config = engine_ac.config.lock().await;
+                                let auto_connect = config.auto_connect;
+                                let is_trusted = config.trusted_hosts.iter().any(|h| h.peer_id == peer_id);
+                                drop(config);
+
+                                if auto_connect && is_trusted {
+                                    log::info!("Auto-connecting to trusted peer {} at {}", peer_id, addr_clone);
+                                    if let Some(state) = app_handle_ac.try_state::<AppState>() {
+                                        // Use the same logic as connect_to_peer_cmd
+                                        let result = auto_connect_to_peer(state.engine.clone(), &addr_clone).await;
+                                        match result {
+                                            Ok(msg) => log::info!("Auto-connect success: {}", msg),
+                                            Err(e) => log::warn!("Auto-connect failed: {}", e),
+                                        }
+                                    }
+                                }
                             });
                         }
                     });

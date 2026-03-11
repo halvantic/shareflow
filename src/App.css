@@ -341,6 +341,11 @@ button.secondary:hover {
 .screen-box .label {
   font-weight: 600;
   margin-bottom: 2px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
 }
 
 .screen-box .res {
@@ -517,4 +522,67 @@ button.secondary:hover {
   color: #666;
   flex-shrink: 0;
   margin-left: 12px;
+}
+
+/* Settings panel */
+.settings-panel {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.settings-group {
+  margin-bottom: 14px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e0e0e0;
+  margin-bottom: 6px;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: #666;
+  margin-left: 8px;
+}
+
+.settings-panel input[type="checkbox"] {
+  accent-color: #e94560;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* Trusted hosts */
+.trusted-hosts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trusted-host-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+}
+
+.trusted-host-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #4caf50;
+  margin-right: 10px;
+}
+
+.trusted-host-id {
+  font-size: 11px;
+  color: #666;
+  font-family: "JetBrains Mono", monospace;
 }

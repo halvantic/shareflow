@@ -1,6 +1,6 @@
 [package]
 name = "shareflow"
-version = "0.1.0"
+version = "1.12.0"
 description = "Share keyboard and mouse between multiple PCs"
 authors = ["you"]
 edition = "2021"

@@ -20,6 +20,13 @@ pub struct Neighbor {
     pub screen_id: Option<String>,
 }
 
+/// A host that is trusted for auto-connect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedHost {
+    pub peer_id: String,
+    pub name: String,
+}
+
 /// Persisted application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -32,14 +39,27 @@ pub struct AppConfig {
     /// Port to listen on.
     pub port: u16,
 
+    /// Port used for LAN discovery broadcasts.
+    #[serde(default = "default_discovery_port")]
+    pub discovery_port: u16,
+
+    /// Automatically connect to trusted hosts when discovered.
+    #[serde(default)]
+    pub auto_connect: bool,
+
+    /// Hosts trusted for auto-connect.
+    #[serde(default)]
+    pub trusted_hosts: Vec<TrustedHost>,
+
     /// Configured screen neighbors.
     pub neighbors: Vec<Neighbor>,
 
-    /// Hotkey scancode combo to force-switch (e.g., Ctrl+Alt+S).
-    pub switch_hotkey: Option<Vec<u16>>,
-
     /// Known/trusted peer certificates (fingerprints).
     pub trusted_peers: Vec<TrustedPeer>,
+}
+
+fn default_discovery_port() -> u16 {
+    24801
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,8 +75,10 @@ impl Default for AppConfig {
             machine_name: hostname(),
             peer_id: uuid::Uuid::new_v4().to_string(),
             port: 24800,
+            discovery_port: 24801,
+            auto_connect: false,
+            trusted_hosts: Vec::new(),
             neighbors: Vec::new(),
-            switch_hotkey: None,
             trusted_peers: Vec::new(),
         }
     }
@@ -67,7 +89,21 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
         match std::fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Ok(contents) => {
+                let mut config: Self = serde_json::from_str(&contents).unwrap_or_default();
+                let mut changed = false;
+
+                // Fix placeholder hostnames from previous versions
+                if config.machine_name == "Unknown-PC" || config.machine_name.is_empty() {
+                    config.machine_name = hostname();
+                    changed = true;
+                }
+
+                if changed {
+                    config.save();
+                }
+                config
+            }
             Err(_) => {
                 let config = Self::default();
                 config.save();
@@ -127,8 +163,25 @@ fn hostname() -> String {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("HOST"))
-            .unwrap_or_else(|_| "Unknown-PC".into())
+        if let Ok(h) = std::env::var("HOSTNAME") {
+            if !h.is_empty() {
+                return h;
+            }
+        }
+        if let Ok(h) = std::env::var("HOST") {
+            if !h.is_empty() {
+                return h;
+            }
+        }
+        // Fallback: run `hostname` command (reliable on macOS GUI apps where env vars aren't set)
+        if let Ok(output) = std::process::Command::new("hostname").output() {
+            if let Ok(name) = String::from_utf8(output.stdout) {
+                let trimmed = name.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+        "Unknown-PC".into()
     }
 }

@@ -10,6 +10,10 @@ pub fn get_screens() -> Vec<ScreenInfo> {
     {
         get_screens_macos()
     }
+    #[cfg(target_os = "linux")]
+    {
+        crate::input::linux::get_screens_linux()
+    }
 }
 
 #[cfg(target_os = "windows")]

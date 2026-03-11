@@ -12,8 +12,67 @@ use crate::core::protocol::{
 static SUPPRESS: AtomicBool = AtomicBool::new(false);
 static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::new();
 
+/// Virtual cursor position tracking for remote mouse control.
+static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Track which mouse button is currently held (0=none, 1=left, 2=right, 3=other).
+/// Used to post drag events instead of move events during a drag.
+static HELD_BUTTON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Remote screen bounds for clamping virtual position.
+static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
+static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1080);
+
+/// Anchor position to lock the local cursor when suppressed.
+/// The cursor is warped back here on every mouse move to prevent visible movement.
+static ANCHOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static ANCHOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+// CGEvent delta fields
+const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
+const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
+
+// Field to stamp on injected events so the event tap can identify them.
+// Unlike an AtomicBool flag, this travels WITH the event through the async
+// CGEventPost pipeline, eliminating the race condition.
+const KCG_EVENT_SOURCE_USER_DATA: u32 = 42;
+const SHAREFLOW_EVENT_MARKER: i64 = 0x53464C57; // "SFLW"
+
+// Click state field — macOS apps ignore clicks with count=0.
+const KCG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
+
+// CGEventSource state IDs.
+const KCG_EVENT_SOURCE_STATE_COMBINED_SESSION: i32 = 0;
+const KCG_EVENT_SOURCE_STATE_HID_SYSTEM: i32 = 1;
+
 pub fn set_suppress(suppress: bool) {
+    if suppress {
+        // Capture current cursor position as the anchor point.
+        // The cursor will be warped back here on every move while suppressed.
+        unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            if !event.is_null() {
+                let loc = CGEventGetLocation(event);
+                ANCHOR_X.store(loc.x as i32, Ordering::SeqCst);
+                ANCHOR_Y.store(loc.y as i32, Ordering::SeqCst);
+                CFRelease(event);
+            }
+        }
+    }
     SUPPRESS.store(suppress, Ordering::SeqCst);
+}
+
+/// Initialize remote mouse control: set virtual position to the entry point on the remote screen.
+pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
+    VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
+    VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
+    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
+    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
+    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
+    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
 }
 
 // --- CoreGraphics FFI types and functions ---
@@ -68,6 +127,8 @@ const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
 
 // CGEventTapLocation
 const KCG_HID_EVENT_TAP: u32 = 0;
+#[allow(dead_code)]
+const KCG_SESSION_EVENT_TAP: u32 = 1;
 // CGEventTapPlacement
 const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
 // CGEventTapOptions
@@ -87,6 +148,7 @@ const KCG_EVENT_FLAG_MASK_SHIFT: u64 = 0x00020000;
 const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x00040000;
 const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x00080000; // Option/Alt
 const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x00100000;
+const KCG_EVENT_FLAG_MASK_ALPHA_SHIFT: u64 = 0x00010000; // Caps Lock
 
 type CGEventTapCallBack = extern "C" fn(
     proxy: CGEventTapProxy,
@@ -115,7 +177,6 @@ extern "C" {
     fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRun();
 
-    fn CGEventGetType(event: CGEventRef) -> u32;
     fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetFlags(event: CGEventRef) -> u64;
@@ -142,7 +203,12 @@ extern "C" {
         wheel3: i32,
     ) -> CGEventRef;
 
+    fn CGEventCreate(source: *const c_void) -> CGEventRef;
+    fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    fn CGEventSetType(event: CGEventRef, event_type: u32);
+    fn CGEventSetFlags(event: CGEventRef, flags: u64);
     fn CGEventPost(tap: u32, event: CGEventRef);
+    fn CGEventSourceCreate(state_id: i32) -> *mut c_void;
     fn CFRelease(cf: *const c_void);
     fn CGWarpMouseCursorPosition(new_cursor_position: CGPoint) -> i32;
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
@@ -375,7 +441,12 @@ fn scancode_to_mac_vk(sc: u16) -> Option<u16> {
 // --- Event Tap Callback ---
 
 /// Track previous modifier flags for detecting individual modifier key changes.
-static mut PREV_FLAGS: u64 = 0;
+static PREV_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Last known cursor position, updated by move_mouse() and the event tap callback.
+/// Used by press_mouse_button() instead of a dummy CGEvent (which returns 0,0).
+static LAST_CURSOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static LAST_CURSOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 extern "C" fn event_tap_callback(
     _proxy: CGEventTapProxy,
@@ -385,13 +456,19 @@ extern "C" fn event_tap_callback(
 ) -> CGEventRef {
     // Re-enable tap if it was disabled by timeout
     if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT {
-        // We'd need the tap reference to re-enable. Store it in a global.
-        unsafe {
-            if let Some(tap) = TAP_REF.as_ref() {
-                CGEventTapEnable(*tap, true);
-            }
+        if let Some(tap) = TAP_REF.get() {
+            unsafe { CGEventTapEnable(tap.0, true); }
         }
         return event;
+    }
+
+    // Skip our own injected events — identified by a marker field value
+    // stamped on the event itself. This is race-free unlike an AtomicBool
+    // flag, because CGEventPost is asynchronous.
+    unsafe {
+        if CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA) == SHAREFLOW_EVENT_MARKER {
+            return event;
+        }
     }
 
     let sender = match EVENT_SENDER.get() {
@@ -407,7 +484,45 @@ extern "C" fn event_tap_callback(
             | KCG_EVENT_LEFT_MOUSE_DRAGGED
             | KCG_EVENT_RIGHT_MOUSE_DRAGGED
             | KCG_EVENT_OTHER_MOUSE_DRAGGED => {
+                if suppress {
+                    // Use raw deltas for accurate tracking when cursor is suppressed
+                    let dx = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_X) as i32;
+                    let dy = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_Y) as i32;
+                    if dx != 0 || dy != 0 {
+                        let mut vx = VIRTUAL_X.load(Ordering::SeqCst) + dx;
+                        let mut vy = VIRTUAL_Y.load(Ordering::SeqCst) + dy;
+
+                        // Clamp to remote screen bounds
+                        let left = REMOTE_LEFT.load(Ordering::SeqCst);
+                        let top = REMOTE_TOP.load(Ordering::SeqCst);
+                        let right = REMOTE_RIGHT.load(Ordering::SeqCst);
+                        let bottom = REMOTE_BOTTOM.load(Ordering::SeqCst);
+                        vx = vx.clamp(left, right - 1);
+                        vy = vy.clamp(top, bottom - 1);
+
+                        VIRTUAL_X.store(vx, Ordering::SeqCst);
+                        VIRTUAL_Y.store(vy, Ordering::SeqCst);
+
+                        let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
+                            x: vx,
+                            y: vy,
+                        }));
+                    }
+                    // Warp the cursor back to the anchor point to prevent
+                    // visible movement on the local Mac screen. Returning
+                    // null_mut() alone only prevents app delivery — the
+                    // HID-level cursor has already moved visually.
+                    let ax = ANCHOR_X.load(Ordering::SeqCst);
+                    let ay = ANCHOR_Y.load(Ordering::SeqCst);
+                    CGWarpMouseCursorPosition(CGPoint {
+                        x: ax as f64,
+                        y: ay as f64,
+                    });
+                    return std::ptr::null_mut();
+                }
                 let loc = CGEventGetLocation(event);
+                LAST_CURSOR_X.store(loc.x as i32, Ordering::SeqCst);
+                LAST_CURSOR_Y.store(loc.y as i32, Ordering::SeqCst);
                 let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
                     x: loc.x as i32,
                     y: loc.y as i32,
@@ -468,9 +583,10 @@ extern "C" fn event_tap_callback(
             KCG_EVENT_SCROLL_WHEEL => {
                 let dy = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1);
                 let dx = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_2);
+                // Normalize to Windows WHEEL_DELTA convention (120 per notch)
                 let _ = sender.send(InputEvent::MouseScroll(MouseScrollEvent {
-                    dx: dx as i32,
-                    dy: dy as i32,
+                    dx: dx as i32 * 120,
+                    dy: dy as i32 * 120,
                 }));
             }
 
@@ -505,10 +621,10 @@ extern "C" fn event_tap_callback(
                     0x3A | 0x3D => (flags & KCG_EVENT_FLAG_MASK_ALTERNATE) != 0,
                     0x37 | 0x36 => (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0,
                     0x39 => (flags & 0x00010000) != 0, // Caps Lock
-                    _ => flags > PREV_FLAGS,
+                    _ => flags > PREV_FLAGS.load(Ordering::SeqCst),
                 };
 
-                PREV_FLAGS = flags;
+                PREV_FLAGS.store(flags, Ordering::SeqCst);
                 let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
             }
 
@@ -524,21 +640,26 @@ extern "C" fn event_tap_callback(
     }
 }
 
+/// Wrapper to allow CFMachPortRef (a raw pointer) in a static OnceLock.
+/// Safety: The event tap is created once on a single thread and only read
+/// afterwards (to re-enable after timeout), so this is safe in practice.
+struct TapRef(CFMachPortRef);
+unsafe impl Send for TapRef {}
+unsafe impl Sync for TapRef {}
+
 /// Global reference to the event tap for re-enabling after timeout.
-static mut TAP_REF: Option<CFMachPortRef> = None;
+static TAP_REF: OnceLock<TapRef> = OnceLock::new();
 
 // --- Input Capture ---
 
 pub struct MacOSInputCapture {
     capturing: bool,
-    event_rx: Option<std::sync::mpsc::Receiver<InputEvent>>,
 }
 
 impl MacOSInputCapture {
     pub fn new() -> Self {
         Self {
             capturing: false,
-            event_rx: None,
         }
     }
 
@@ -568,14 +689,9 @@ impl MacOSInputCapture {
         (
             Self {
                 capturing: true,
-                event_rx: None,
             },
             Some(rx),
         )
-    }
-
-    pub fn take_event_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<InputEvent>> {
-        self.event_rx.take()
     }
 }
 
@@ -613,7 +729,7 @@ unsafe fn run_event_tap() {
     }
 
     // Store tap reference for re-enabling after timeout
-    TAP_REF = Some(tap);
+    let _ = TAP_REF.set(TapRef(tap));
 
     let run_loop_source =
         CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
@@ -656,22 +772,113 @@ impl InputCapture for MacOSInputCapture {
 
 // --- Input Injection ---
 
+/// Whether the HID keyboard system has been primed with a warm-up event.
+/// On macOS, CGEventPost to the HID tap can silently drop the first few
+/// keyboard events if no physical keyboard activity has occurred since boot.
+/// We prime it by posting a harmless Shift key down+up on first use.
+static KEYBOARD_PRIMED: AtomicBool = AtomicBool::new(false);
+
 pub struct MacOSInputInjector;
 
 impl MacOSInputInjector {
     pub fn new() -> Self {
+        // Verify accessibility permission is available for injection
+        let trusted = unsafe { AXIsProcessTrusted() };
+        if !trusted {
+            log::error!(
+                "Accessibility permission not granted — input injection (clicks, keys, scroll) \
+                 will NOT work. Go to System Settings > Privacy & Security > Accessibility \
+                 and add ShareFlow."
+            );
+        } else {
+            log::info!("Accessibility permission verified for input injection");
+            // Prime the keyboard immediately at injector creation.
+            Self::prime_keyboard();
+        }
         Self
     }
+
+    /// Send a harmless Shift key down+up to warm the HID keyboard event pipeline.
+    fn prime_keyboard() {
+        if KEYBOARD_PRIMED.swap(true, Ordering::SeqCst) {
+            return; // Already primed
+        }
+        unsafe {
+            let source = create_event_source();
+            // Shift key (vk 0x38) — produces no visible output.
+            let down = CGEventCreateKeyboardEvent(source, 0x38, true);
+            if !down.is_null() {
+                CGEventSetIntegerValueField(down, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, down);
+                CFRelease(down);
+            }
+            let up = CGEventCreateKeyboardEvent(source, 0x38, false);
+            if !up.is_null() {
+                CGEventSetIntegerValueField(up, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, up);
+                CFRelease(up);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+            log::info!("HID keyboard primed with warm-up event");
+        }
+    }
+}
+
+/// Create a CGEventSource for injection.  Returns null on failure.
+/// Uses HIDSystemState so injected events appear to originate from hardware,
+/// which is required for reliable click/key/scroll injection on macOS.
+unsafe fn create_event_source() -> *mut c_void {
+    let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_HID_SYSTEM);
+    if source.is_null() {
+        log::warn!("CGEventSourceCreate(HIDSystem) returned null, trying CombinedSession");
+        let fallback = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+        if fallback.is_null() {
+            log::error!("CGEventSourceCreate failed entirely — check Accessibility permissions");
+        }
+        return fallback;
+    }
+    source
 }
 
 impl InputInjector for MacOSInputInjector {
     fn move_mouse(&self, x: i32, y: i32) -> Result<(), String> {
+        // Update tracked cursor position for press_mouse_button
+        LAST_CURSOR_X.store(x, Ordering::SeqCst);
+        LAST_CURSOR_Y.store(y, Ordering::SeqCst);
         unsafe {
             let point = CGPoint {
                 x: x as f64,
                 y: y as f64,
             };
             CGWarpMouseCursorPosition(point);
+
+            // Post a mouse event to re-sync the event stream after warp.
+            // Use drag event type when a button is held, otherwise macOS
+            // won't show live window dragging.
+            let held = HELD_BUTTON.load(Ordering::SeqCst);
+            let (event_type, cg_button) = match held {
+                1 => (KCG_EVENT_LEFT_MOUSE_DRAGGED, 0u32),
+                2 => (KCG_EVENT_RIGHT_MOUSE_DRAGGED, 1),
+                3 => (KCG_EVENT_OTHER_MOUSE_DRAGGED, 2),
+                _ => (KCG_EVENT_MOUSE_MOVED, 0),
+            };
+            let source = create_event_source();
+            let move_event = CGEventCreateMouseEvent(
+                source,
+                event_type,
+                point,
+                cg_button,
+            );
+            if !move_event.is_null() {
+                CGEventSetIntegerValueField(move_event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, move_event);
+                CFRelease(move_event);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
         }
         Ok(())
     }
@@ -682,22 +889,13 @@ impl InputInjector for MacOSInputInjector {
         pressed: bool,
     ) -> Result<(), String> {
         unsafe {
-            // Get current cursor position for the event
-            // We create a mouse event at position (0,0) with move type to get position,
-            // or just use CGWarp position. Actually, for button events we need current pos.
-            // Use a dummy event to read position.
-            let dummy = CGEventCreateMouseEvent(
-                std::ptr::null(),
-                KCG_EVENT_MOUSE_MOVED,
-                CGPoint { x: 0.0, y: 0.0 },
-                0,
-            );
-            let pos = if !dummy.is_null() {
-                let p = CGEventGetLocation(dummy);
-                CFRelease(dummy);
-                p
-            } else {
-                CGPoint { x: 0.0, y: 0.0 }
+            let source = create_event_source();
+            // Use tracked cursor position instead of a dummy CGEvent
+            // (CGEventGetLocation on a newly-created event returns the position
+            // passed to CGEventCreate, not the actual cursor position).
+            let pos = CGPoint {
+                x: LAST_CURSOR_X.load(Ordering::SeqCst) as f64,
+                y: LAST_CURSOR_Y.load(Ordering::SeqCst) as f64,
             };
 
             let (event_type, cg_button) = match (button, pressed) {
@@ -713,10 +911,36 @@ impl InputInjector for MacOSInputInjector {
                 (MouseButton::Button5, false) => (KCG_EVENT_OTHER_MOUSE_UP, 4),
             };
 
-            let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, pos, cg_button);
+            // Track held button so move_mouse can post drag events
+            if pressed {
+                let held = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Right => 2,
+                    _ => 3,
+                };
+                HELD_BUTTON.store(held, Ordering::SeqCst);
+            } else {
+                HELD_BUTTON.store(0, Ordering::SeqCst);
+            }
+
+            let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);
             if !event.is_null() {
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                // Set click count to 1 — some macOS apps ignore clicks with count=0
+                if pressed {
+                    CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_CLICK_STATE, 1);
+                }
+                // For Other-type mouse buttons, explicitly set the button number field
+                if cg_button >= 2 {
+                    CGEventSetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER, cg_button as i64);
+                }
                 CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateMouseEvent returned null for type={} button={}", event_type, cg_button);
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())
@@ -724,17 +948,27 @@ impl InputInjector for MacOSInputInjector {
 
     fn scroll(&self, dx: i32, dy: i32) -> Result<(), String> {
         unsafe {
+            // Convert from WHEEL_DELTA convention (120 per notch) to lines
+            let line_dy = if dy.abs() >= 120 { dy / 120 } else { dy.signum() };
+            let line_dx = if dx.abs() >= 120 { dx / 120 } else { dx.signum() };
+            let source = create_event_source();
             let event = CGEventCreateScrollWheelEvent2(
-                std::ptr::null(),
+                source,
                 KCG_SCROLL_EVENT_UNIT_LINE,
-                2, // wheel_count: 2 axes
-                dy,
-                dx,
+                2,
+                line_dy,
+                line_dx,
                 0,
             );
             if !event.is_null() {
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateScrollWheelEvent2 returned null");
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())
@@ -749,11 +983,72 @@ impl InputInjector for MacOSInputInjector {
             }
         };
 
+        log::debug!(
+            "Injecting key: scancode=0x{:X} mac_vk=0x{:X} pressed={}",
+            scancode, mac_vk, pressed
+        );
+
+        // Caps Lock (vk 0x39) requires special handling on macOS:
+        // It uses kCGEventFlagsChanged (type 12) with the alpha-shift flag,
+        // not regular key down/up events. Without this, Caps Lock acts as a
+        // held modifier instead of a latching toggle.
+        if mac_vk == 0x39 {
+            return self.inject_caps_lock(pressed);
+        }
+
         unsafe {
-            let event = CGEventCreateKeyboardEvent(std::ptr::null(), mac_vk, pressed);
+            let source = create_event_source();
+            let event = CGEventCreateKeyboardEvent(source, mac_vk, pressed);
             if !event.is_null() {
+                CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
+            } else {
+                log::error!("CGEventCreateKeyboardEvent returned null for vk=0x{:X}", mac_vk);
+            }
+            if !source.is_null() {
+                CFRelease(source);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl MacOSInputInjector {
+    /// Inject Caps Lock toggle using a kCGEventFlagsChanged event.
+    /// On macOS, Caps Lock doesn't use normal key down/up — it toggles via
+    /// a flags-changed event with the alpha-shift bit set/cleared.
+    /// We only act on key-down (pressed=true) and perform a full toggle cycle,
+    /// since Windows sends separate down/up but macOS toggles on a single event.
+    fn inject_caps_lock(&self, pressed: bool) -> Result<(), String> {
+        // Only toggle on key-down; ignore key-up to avoid double-toggling.
+        if !pressed {
+            return Ok(());
+        }
+
+        unsafe {
+            let source = create_event_source();
+            // Create a keyboard event for Caps Lock (vk 0x39), then change its
+            // type to kCGEventFlagsChanged and set the alpha-shift flag.
+            let down = CGEventCreateKeyboardEvent(source, 0x39, true);
+            if !down.is_null() {
+                CGEventSetType(down, KCG_EVENT_FLAGS_CHANGED);
+                CGEventSetFlags(down, KCG_EVENT_FLAG_MASK_ALPHA_SHIFT);
+                CGEventSetIntegerValueField(down, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, down);
+                CFRelease(down);
+            }
+            // Post the release (flags cleared) to complete the toggle cycle.
+            let up = CGEventCreateKeyboardEvent(source, 0x39, false);
+            if !up.is_null() {
+                CGEventSetType(up, KCG_EVENT_FLAGS_CHANGED);
+                CGEventSetFlags(up, 0);
+                CGEventSetIntegerValueField(up, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                CGEventPost(KCG_HID_EVENT_TAP, up);
+                CFRelease(up);
+            }
+            if !source.is_null() {
+                CFRelease(source);
             }
         }
         Ok(())

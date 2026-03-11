@@ -2,7 +2,7 @@ use std::net::UdpSocket;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
-const DISCOVERY_PORT: u16 = 24801;
+const DEFAULT_DISCOVERY_PORT: u16 = 24801;
 const MAGIC: &[u8; 4] = b"SFLO";
 
 /// Broadcast announcement for LAN discovery.
@@ -11,6 +11,9 @@ pub struct Announcement {
     pub peer_id: String,
     pub name: String,
     pub port: u16,
+    /// Discovery port used for broadcasts. Not serialized in the announcement itself.
+    #[serde(skip)]
+    pub discovery_port: u16,
 }
 
 /// Broadcast our presence on the LAN.
@@ -25,7 +28,12 @@ pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
     packet.extend_from_slice(MAGIC);
     packet.extend_from_slice(&payload);
 
-    let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
+    let port = if announcement.discovery_port > 0 {
+        announcement.discovery_port
+    } else {
+        DEFAULT_DISCOVERY_PORT
+    };
+    let broadcast_addr = format!("255.255.255.255:{}", port);
     socket
         .send_to(&packet, &broadcast_addr)
         .map_err(|e| e.to_string())?;
@@ -38,9 +46,11 @@ pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
 /// This is blocking and should be run in a dedicated thread.
 pub fn listen_for_peers(
     own_peer_id: &str,
+    discovery_port: u16,
     callback: impl Fn(Announcement, std::net::SocketAddr),
 ) -> Result<(), String> {
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", DISCOVERY_PORT))
+    let port = if discovery_port > 0 { discovery_port } else { DEFAULT_DISCOVERY_PORT };
+    let socket = UdpSocket::bind(format!("0.0.0.0:{}", port))
         .map_err(|e| format!("Failed to bind discovery socket: {}", e))?;
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))

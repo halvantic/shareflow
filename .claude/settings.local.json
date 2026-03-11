@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"D:/MK Share/shareflow/src-tauri\" && cargo check 2>&1)",
+      "Bash(cd \"D:/MK Share/shareflow/src-tauri\" && cmd //c \"cargo check\" 2>&1)",
+      "Bash(where cargo:*)",
+      "Read(//d/MK Share/shareflow/$HOME/.cargo/bin/**)",
+      "Read(//c/Users/joshu/.cargo/bin/**)",
+      "Read(//d/Users/joshu/.cargo/bin/**)",
+      "Read(//c/Users/joshu/**)",
+      "Bash(cd \"D:/MK Share/shareflow\" && grep '\"version\"' package.json src-tauri/tauri.conf.json && grep '^version' src-tauri/Cargo.toml)",
+      "Bash(cd \"D:/MK Share/shareflow\" && npx tauri build 2>&1)",
+      "Bash(ls /c/Users/joshu/.rustup/toolchains/*/bin/cargo.exe)",
+      "Read(//d/MK Share/shareflow/$USERPROFILE/.cargo/bin/**)",
+      "Bash(export PATH=\"/c/Users/joshu/.cargo/bin:/c/Users/joshu/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin:$PATH\" && cd \"D:/MK Share/shareflow\" && npx tauri build 2>&1)"
+    ]
+  }
+}

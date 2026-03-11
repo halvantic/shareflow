@@ -3,7 +3,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
-use crate::core::engine::Engine;
+use crate::core::engine::{Engine, FocusState};
 use crate::core::protocol::Message;
 use crate::core::screen::get_screens;
 use crate::network::connection::PeerConnection;
@@ -151,17 +151,86 @@ async fn handle_peer_session(
     let injector = crate::input::create_injector();
     while let Some(msg) = conn.incoming.recv().await {
         match msg {
-            Message::MouseMove(mv) => {
-                let _ = injector.move_mouse(mv.x, mv.y);
+            Message::MouseMove(mut mv) => {
+                // Only inject received input when we have local focus (being
+                // controlled by the remote peer). If focus is Remote, these
+                // are stale in-flight events that arrived after an edge switch.
+                // Without this guard, they get forwarded back via
+                // handle_local_input's Remote branch, creating a feedback loop
+                // of bouncing coordinates between the two machines.
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
+                // Coalesce: drain any queued mouse moves and jump to the latest
+                // position. This avoids processing stale positions when events
+                // arrive in bursts over the network.
+                while let Ok(next) = conn.incoming.try_recv() {
+                    match next {
+                        Message::MouseMove(newer) => mv = newer,
+                        other => {
+                            // Non-mouse message — process the coalesced move first,
+                            // then handle this message on the next loop iteration.
+                            let _ = injector.move_mouse(mv.x, mv.y);
+                            let edge_event = crate::input::InputEvent::MouseMove(mv);
+                            if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                                    log::warn!("Failed to send edge switch: {}", e);
+                                }
+                            }
+                            // Re-process the non-mouse message
+                            match other {
+                                Message::MouseButton(mb) => {
+                                    let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                                }
+                                Message::MouseScroll(ms) => {
+                                    let _ = injector.scroll(ms.dx, ms.dy);
+                                }
+                                Message::Key(ke) => {
+                                    crate::diag(format!("RX key sc=0x{:X} pressed={}", ke.scancode, ke.pressed));
+                                    let _ = injector.send_key(ke.scancode, ke.pressed);
+                                }
+                                _ => {} // Other messages handled below in main match
+                            }
+                            // Use a sentinel to skip the move injection below
+                            mv = crate::core::protocol::MouseMoveEvent { x: i32::MIN, y: i32::MIN };
+                            break;
+                        }
+                    }
+                }
+                if mv.x != i32::MIN {
+                    let _ = injector.move_mouse(mv.x, mv.y);
+                    let edge_event = crate::input::InputEvent::MouseMove(mv);
+                    if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
+                        if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                            log::warn!("Failed to send edge switch: {}", e);
+                        }
+                    }
+                }
             }
             Message::MouseButton(mb) => {
-                let _ = injector.press_mouse_button(mb.button, mb.pressed);
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
+                if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
+                    log::error!("Mouse button injection failed: {}", e);
+                }
             }
             Message::MouseScroll(ms) => {
-                let _ = injector.scroll(ms.dx, ms.dy);
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
+                if let Err(e) = injector.scroll(ms.dx, ms.dy) {
+                    log::error!("Scroll injection failed: {}", e);
+                }
             }
             Message::Key(ke) => {
-                let _ = injector.send_key(ke.scancode, ke.pressed);
+                if engine.get_focus().await != FocusState::Local {
+                    continue;
+                }
+                crate::diag(format!("RX key sc=0x{:X} pressed={}", ke.scancode, ke.pressed));
+                if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
+                    log::error!("Key injection failed: {}", e);
+                }
             }
             Message::SwitchFocus {
                 target_id,

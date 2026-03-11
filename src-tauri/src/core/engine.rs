@@ -33,11 +33,14 @@ pub struct Engine {
     pub ui_events: mpsc::Sender<UiEvent>,
     /// Manages incoming file transfers.
     pub file_receiver: FileReceiver,
+    /// Cooldown: last time a focus switch occurred, to prevent rapid oscillation.
+    pub last_switch_time: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 /// Events pushed to the frontend UI.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum UiEvent {
     FocusChanged { state: FocusState },
     PeerConnected { id: String, name: String },
@@ -72,6 +75,7 @@ impl Engine {
             peers: Arc::new(Mutex::new(HashMap::new())),
             ui_events,
             file_receiver: FileReceiver::new(),
+            last_switch_time: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -86,10 +90,22 @@ impl Engine {
                 if let InputEvent::MouseMove(ref mv) = event {
                     let result = self.check_edge_switch(mv.x, mv.y).await;
                     if result.is_some() {
+                        // Cooldown: prevent rapid oscillation between machines.
+                        // Without this, in-flight messages and edge-detection races
+                        // can cause focus to bounce back and forth continuously.
+                        let last = self.last_switch_time.lock().await;
+                        if let Some(t) = *last {
+                            if t.elapsed() < std::time::Duration::from_millis(250) {
+                                return None;
+                            }
+                        }
+                        drop(last);
+
                         drop(focus);
-                        // We're switching — enable suppression
-                        if let Some((ref peer_id, _)) = result {
-                            self.switch_to_remote(peer_id).await;
+                        if let Some((ref peer_id, ref msg)) = result {
+                            if let Message::SwitchFocus { entry_x, entry_y, .. } = msg {
+                                self.switch_to_remote(peer_id, *entry_x, *entry_y).await;
+                            }
                         }
                     }
                     return result;
@@ -166,12 +182,39 @@ impl Engine {
     }
 
     /// Switch focus to a remote peer — starts suppressing local input.
-    pub async fn switch_to_remote(&self, peer_id: &str) {
+    /// `entry_x`/`entry_y` is the cursor entry point on the remote screen.
+    pub async fn switch_to_remote(&self, peer_id: &str, entry_x: i32, entry_y: i32) {
+        // Record switch time for cooldown.
+        *self.last_switch_time.lock().await = Some(std::time::Instant::now());
+
+        // Get remote screen bounds FIRST, before enabling suppress.
+        let peers = self.peers.lock().await;
+        let (rs_x, rs_y, rs_w, rs_h) = if let Some(peer) = peers.get(peer_id) {
+            if let Some(s) = peer.screens.first() {
+                (s.x, s.y, s.width, s.height)
+            } else {
+                (0, 0, 1920, 1080)
+            }
+        } else {
+            (0, 0, 1920, 1080)
+        };
+        drop(peers);
+
+        // Initialize virtual cursor tracking BEFORE enabling suppress.
+        // This is critical: if suppress is enabled first, the mouse hook
+        // immediately starts calculating deltas from the warp center.
+        // With stale center/position values (0,0 on first use, or leftover
+        // from a previous session), the delta from the real cursor position
+        // to the stale center is huge, producing garbage coordinates that
+        // make the remote cursor snap wildly across the screen.
+        crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
+
         let mut focus = self.focus.lock().await;
         *focus = FocusState::Remote(peer_id.to_string());
         drop(focus);
+
         crate::input::set_input_suppression(true);
-        log::info!("Focus switched to remote peer: {}", peer_id);
+        crate::diag(format!("Focus → remote {}", &peer_id[..peer_id.len().min(8)]));
         let _ = self
             .ui_events
             .send(UiEvent::FocusChanged {
@@ -182,11 +225,14 @@ impl Engine {
 
     /// Switch focus back to local — stops suppressing input.
     pub async fn switch_to_local(&self) {
+        // Record switch time for cooldown.
+        *self.last_switch_time.lock().await = Some(std::time::Instant::now());
+
         let mut focus = self.focus.lock().await;
         *focus = FocusState::Local;
         drop(focus);
         crate::input::set_input_suppression(false);
-        log::info!("Focus switched to local");
+        crate::diag("Focus → local".into());
         let _ = self
             .ui_events
             .send(UiEvent::FocusChanged {
