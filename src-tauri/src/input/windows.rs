@@ -4,9 +4,9 @@ use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    VIRTUAL_KEY,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, VIRTUAL_KEY,
     MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
     MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
@@ -169,6 +169,63 @@ pub fn set_suppress(suppress: bool) {
 #[allow(dead_code)]
 pub fn is_suppressing() -> bool {
     SUPPRESS.load(Ordering::SeqCst)
+}
+
+/// Synthesize key-up events for any modifier keys currently held by the user.
+/// Called just before engaging SUPPRESS so that while the OS is in "suppress on"
+/// state, Windows does not have a stuck modifier whose key-up will arrive
+/// post-suppression and be forwarded to the remote machine instead.
+///
+/// Uses GetAsyncKeyState which queries instantaneous hardware key state — safe
+/// to call from any thread at any time (unlike GetKeyState which requires a
+/// message-loop thread to have processed the event).
+pub fn flush_held_modifier_keys() {
+    // VK codes and their corresponding PS/2 extended-scancode for SendInput.
+    // (vk, scan, is_extended)
+    const MODIFIERS: &[(u16, u16, bool)] = &[
+        (0x10, 0x2A, false), // VK_SHIFT (generic)
+        (0xA0, 0x2A, false), // VK_LSHIFT
+        (0xA1, 0x36, false), // VK_RSHIFT
+        (0x11, 0x1D, false), // VK_CONTROL (generic)
+        (0xA2, 0x1D, false), // VK_LCONTROL
+        (0xA3, 0x1D, true),  // VK_RCONTROL  (extended)
+        (0x12, 0x38, false), // VK_MENU / Alt (generic)
+        (0xA4, 0x38, false), // VK_LMENU
+        (0xA5, 0x38, true),  // VK_RMENU  (extended)
+        (0x5B, 0x5B, true),  // VK_LWIN  (extended)
+        (0x5C, 0x5C, true),  // VK_RWIN  (extended)
+    ];
+
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(MODIFIERS.len());
+    unsafe {
+        for &(vk, scan, extended) in MODIFIERS {
+            // GetAsyncKeyState returns i16; high bit set = key is physically down.
+            let state = GetAsyncKeyState(vk as i32);
+            if (state as u16) & 0x8000 != 0 {
+                let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+                if extended {
+                    flags |= KEYEVENTF_EXTENDEDKEY;
+                }
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: Default::default(),
+                            wScan: scan,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: SHAREFLOW_EXTRA_INFO,
+                        },
+                    },
+                });
+                log::debug!("flush_held_modifier_keys: releasing VK 0x{:X}", vk);
+            }
+        }
+        if !inputs.is_empty() {
+            log::info!("flush_held_modifier_keys: releasing {} held modifiers before suppress", inputs.len());
+            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
 }
 
 /// Initialize remote mouse control: set virtual position and warp cursor to screen center.

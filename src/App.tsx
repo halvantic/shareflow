@@ -86,6 +86,7 @@ function App() {
   const [showDiag, setShowDiag] = useState(false);
   const [diagLines, setDiagLines] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [settingsPort, setSettingsPort] = useState("");
   const [settingsDiscoveryPort, setSettingsDiscoveryPort] = useState("");
   const [settingsAutoConnect, setSettingsAutoConnect] = useState(false);
@@ -129,6 +130,29 @@ function App() {
     },
     []
   );
+
+  // Listen for macOS permissions-required event and show the setup modal.
+  useEffect(() => {
+    const unsub = listen<any>("permissions-required", () => {
+      setShowPermissionsModal(true);
+    });
+    return () => { unsub.then((f) => f()); };
+  }, []);
+
+  const handleOpenAccessibilitySettings = async () => {
+    await invoke("open_accessibility_settings");
+  };
+
+  const handleCheckAccessibilityAgain = async () => {
+    const granted = await invoke<boolean>("check_accessibility_permission");
+    if (granted) {
+      setShowPermissionsModal(false);
+      addToast("Accessibility granted — restart app to activate input capture", "success");
+      addLog("Accessibility permission granted", "success");
+    } else {
+      addToast("Not yet granted — enable ShareFlow in System Settings", "info");
+    }
+  };
 
   useEffect(() => {
     if (logRef.current) {
@@ -622,6 +646,61 @@ function App() {
           </div>
         ))}
       </div>
+
+      {/* macOS Permissions Setup Modal */}
+      {showPermissionsModal && (
+        <div className="permissions-overlay">
+          <div className="permissions-modal">
+            <h2 style={{ marginBottom: 6, fontSize: 18 }}>Permissions Required</h2>
+            <p style={{ color: "#aaa", marginBottom: 20, fontSize: 13, lineHeight: 1.5 }}>
+              ShareFlow needs the following permissions to work correctly on macOS.
+            </p>
+
+            <div className="perm-section">
+              <div className="perm-title">
+                <span>Accessibility</span>
+                <span className="perm-badge perm-required">Required</span>
+              </div>
+              <p className="perm-desc">
+                Allows ShareFlow to capture and inject keyboard &amp; mouse events — the core KVM feature.
+                Without this, input sharing will not work.
+              </p>
+              <ol className="perm-steps">
+                <li>Click <strong>Open System Settings</strong> below</li>
+                <li>Scroll to find <strong>ShareFlow</strong> and toggle it on</li>
+                <li>Return here and click <strong>I've Granted Access</strong></li>
+              </ol>
+              <div className="perm-actions">
+                <button onClick={handleOpenAccessibilitySettings}>
+                  Open System Settings
+                </button>
+                <button className="secondary" onClick={handleCheckAccessibilityAgain}>
+                  I've Granted Access
+                </button>
+              </div>
+            </div>
+
+            <div className="perm-section">
+              <div className="perm-title">
+                <span>Network (Firewall)</span>
+                <span className="perm-badge perm-auto">Auto-prompted</span>
+              </div>
+              <p className="perm-desc">
+                macOS will automatically show a firewall dialog the first time ShareFlow listens
+                for peer connections. Click <strong>Allow</strong> when that dialog appears.
+              </p>
+            </div>
+
+            <button
+              className="secondary"
+              style={{ marginTop: 20, fontSize: 12, opacity: 0.7 }}
+              onClick={() => setShowPermissionsModal(false)}
+            >
+              Skip for now (input sharing may not work)
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="header">

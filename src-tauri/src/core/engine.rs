@@ -217,20 +217,41 @@ impl Engine {
         };
         drop(peers);
 
-        // Initialize virtual cursor tracking BEFORE enabling suppress.
-        // This is critical: if suppress is enabled first, the mouse hook
-        // immediately starts calculating deltas from the warp center.
-        // With stale center/position values (0,0 on first use, or leftover
-        // from a previous session), the delta from the real cursor position
-        // to the stale center is huge, producing garbage coordinates that
-        // make the remote cursor snap wildly across the screen.
-        crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
+        // Set focus and enable suppression BEFORE warping the cursor.
+        // On Windows, SetCursorPos (called inside init_remote_mouse) fires
+        // WM_MOUSEMOVE in the hook thread synchronously. If SUPPRESS is not
+        // yet true, that warp event passes through as a real mouse move AND
+        // any keystrokes that arrive in the brief window (hook thread vs async
+        // runtime scheduling) are not suppressed — causing the Start Menu to
+        // open when Win key is pressed right at the edge transition. Setting
+        // SUPPRESS first closes this race window.
+        //
+        // The warp center and virtual position are already zeroed/defaulted to
+        // safe values; the hook's delta path will produce dx=0,dy=0 for the
+        // warp-generated move since it was fired AFTER WARP_CENTER was set in
+        // init_remote_mouse. On the very first call, WARP_CENTER=0, so dx may
+        // be non-zero, but that produces only a single small positional jump on
+        // the remote screen — far less disruptive than allowing keystrokes to
+        // leak through the unsealed suppress window.
+        //
+        // Release any locally-held modifier keys on Windows before sealing the
+        // suppress gate. This prevents the up-event for a modifier that was
+        // physically pressed (e.g. Shift) from reaching the remote machine as
+        // an orphaned key-up, which would leave the remote in a wrong modifier
+        // state.
+        crate::input::flush_held_keys();
 
         let mut focus = self.focus.lock().await;
         *focus = FocusState::Remote(peer_id.to_string());
         drop(focus);
 
         crate::input::set_input_suppression(true);
+
+        // Initialize virtual cursor tracking AFTER suppression is active.
+        // The warp (SetCursorPos/CGWarpMouseCursorPosition) fires inside this
+        // call. With SUPPRESS already true the hook's delta path handles the
+        // warp-generated event correctly and the move is not forwarded locally.
+        crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
         crate::diag(format!("Focus → remote {}", &peer_id[..peer_id.len().min(8)]));
 
         // Push our local clipboard to the remote peer immediately so that Ctrl+V

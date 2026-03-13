@@ -137,3 +137,28 @@ pub fn create_capture_with_channel() -> (
 pub fn start_display_change_monitor() -> std::sync::mpsc::Receiver<()> {
     macos::start_display_change_monitor()
 }
+
+/// Re-prime the keyboard HID pipeline for focus transitions (macOS only).
+/// Sends a harmless warm-up Shift key event so that the first real key injected
+/// after a SwitchFocus is reliably delivered.
+pub fn reprime_keyboard_for_focus() {
+    #[cfg(target_os = "macos")]
+    {
+        macos::reprime_keyboard_for_focus();
+    }
+}
+
+/// Release any modifier keys (Shift, Ctrl, Alt, Win/Cmd) that are physically
+/// held on the local machine before engaging input suppression.  Prevents stuck
+/// modifiers on the local OS when the key-up arrives after SUPPRESS=true and
+/// is routed to the remote machine instead.  No-op on non-Windows platforms
+/// because macOS drives this via `reset_injected_modifiers` triggered from
+/// `set_suppress(false)`.
+pub fn flush_held_keys() {
+    #[cfg(target_os = "windows")]
+    {
+        windows::flush_held_modifier_keys();
+    }
+    // macOS and Linux: the local machine is not the keyboard source when
+    // switch_to_remote fires — no modifier flush needed.
+}

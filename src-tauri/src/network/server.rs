@@ -258,6 +258,9 @@ async fn handle_peer_session(
                     // We're getting focus — place cursor at entry point.
                     let _ = injector.move_mouse(entry_x, entry_y);
                     engine.switch_to_local().await;
+                    // Re-warm the HID keyboard pipeline so that the first key
+                    // event from the remote peer is delivered immediately.
+                    crate::input::reprime_keyboard_for_focus();
                     log::info!("Received focus at ({}, {})", entry_x, entry_y);
                 }
             }

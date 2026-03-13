@@ -37,6 +37,15 @@ struct AppState {
     engine: Arc<Engine>,
 }
 
+// On macOS, check whether the process has the Accessibility (Event Tap) permission.
+#[cfg(target_os = "macos")]
+fn macos_accessibility_trusted() -> bool {
+    extern "C" {
+        fn AXIsProcessTrusted() -> u8;
+    }
+    unsafe { AXIsProcessTrusted() != 0 }
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -379,6 +388,26 @@ fn get_diagnostics() -> Vec<String> {
 #[tauri::command]
 fn quit_app() {
     std::process::exit(0);
+}
+
+/// Returns true if Accessibility permission is granted (macOS), always true on other platforms.
+#[tauri::command]
+fn check_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    { macos_accessibility_trusted() }
+    #[cfg(not(target_os = "macos"))]
+    { true }
+}
+
+/// Opens System Settings → Privacy & Security → Accessibility on macOS.
+#[tauri::command]
+fn open_accessibility_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn();
+    }
 }
 
 #[tauri::command]
@@ -862,6 +891,8 @@ pub fn run() {
             update_settings,
             add_trusted_host,
             remove_trusted_host,
+            check_accessibility_permission,
+            open_accessibility_settings,
         ])
         // Hide to tray when the window is closed on Windows and macOS,
         // instead of quitting. Use Quit from the tray menu to fully exit.
@@ -878,7 +909,23 @@ pub fn run() {
 
             // On macOS, remove the Dock icon so the app lives only in the menu bar.
             #[cfg(target_os = "macos")]
-            app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Check Accessibility permission on macOS and notify the UI if not yet granted.
+            // The user must enable ShareFlow in System Settings → Privacy & Security → Accessibility
+            // for keyboard/mouse capture (event tap) to work.
+            #[cfg(target_os = "macos")]
+            {
+                let app_handle_perm = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    if !macos_accessibility_trusted() {
+                        let _ = app_handle_perm.emit("permissions-required", serde_json::json!({
+                            "accessibility": false
+                        }));
+                    }
+                });
+            }
 
             // Set up system tray
             if let Err(e) = setup_tray(app, engine.clone()) {

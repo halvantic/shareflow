@@ -991,6 +991,16 @@ impl MacOSInputInjector {
     }
 }
 
+/// Re-prime the HID keyboard pipeline for focus transitions.
+/// Resets the KEYBOARD_PRIMED flag so that prime_keyboard() will fire again,
+/// ensuring the warm-up Shift event is sent each time the local Mac receives
+/// focus from a remote peer.  Call this immediately after switch_to_local() on
+/// macOS, before the first key injection arrives from the remote machine.
+pub fn reprime_keyboard_for_focus() {
+    KEYBOARD_PRIMED.store(false, Ordering::SeqCst);
+    MacOSInputInjector::prime_keyboard();
+}
+
 /// Create a CGEventSource for injection.  Returns null on failure.
 /// Uses HIDSystemState so injected events appear to originate from hardware,
 /// which is required for reliable click/key/scroll injection on macOS.
