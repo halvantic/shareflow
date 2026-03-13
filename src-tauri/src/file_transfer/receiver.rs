@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -31,8 +31,19 @@ impl FileReceiver {
         let dir = receive_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {}", e))?;
 
+        // Sanitize: strip any path components to prevent directory traversal.
+        let safe_name = std::path::Path::new(file_name)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "download".to_string());
+        let safe_name = if safe_name.is_empty() || safe_name == "." || safe_name == ".." {
+            "download".to_string()
+        } else {
+            safe_name
+        };
+
         // Avoid overwriting: add suffix if file exists
-        let mut path = dir.join(file_name);
+        let mut path = dir.join(&safe_name);
         if path.exists() {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
             let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -73,11 +84,25 @@ impl FileReceiver {
     }
 
     /// Write a chunk of data. Returns (received_bytes, total_bytes, file_name).
-    pub fn write_chunk(&self, transfer_id: &str, _offset: u64, data: &[u8]) -> Result<(u64, u64, String), String> {
+    pub fn write_chunk(&self, transfer_id: &str, offset: u64, data: &[u8]) -> Result<(u64, u64, String), String> {
         let mut transfers = self.transfers.lock().unwrap();
         let incoming = transfers
             .get_mut(transfer_id)
             .ok_or_else(|| format!("Unknown transfer: {}", transfer_id))?;
+
+        // Enforce file_size limit: reject writes that would exceed declared size.
+        if incoming.received + data.len() as u64 > incoming.file_size {
+            return Err(format!(
+                "Transfer {} exceeded declared file size ({} bytes)",
+                transfer_id, incoming.file_size
+            ));
+        }
+
+        // Seek to the correct offset for out-of-order chunks.
+        incoming
+            .writer
+            .seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| format!("Seek error: {}", e))?;
 
         incoming
             .writer

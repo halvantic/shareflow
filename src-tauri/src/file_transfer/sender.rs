@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use tokio::sync::mpsc;
 
@@ -48,24 +49,32 @@ pub async fn send_file(
         })
         .await;
 
-    // Read and send chunks
-    let data = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    // Read and send chunks using streaming to avoid loading entire file into memory
+    let file = std::fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut chunk_buf = vec![0u8; CHUNK_SIZE];
 
     let mut offset: u64 = 0;
-    for chunk in data.chunks(CHUNK_SIZE) {
+    loop {
+        let bytes_read = reader.read(&mut chunk_buf)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        if bytes_read == 0 {
+            break;
+        }
+
         engine
             .send_to_peer(
                 peer_id,
                 Message::FileChunk {
                     transfer_id: transfer_id.clone(),
                     offset,
-                    data: chunk.to_vec(),
+                    data: chunk_buf[..bytes_read].to_vec(),
                 },
             )
             .await?;
 
-        offset += chunk.len() as u64;
+        offset += bytes_read as u64;
 
         let _ = progress_tx
             .send(FileProgress {

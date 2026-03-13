@@ -18,9 +18,14 @@ static EVENT_SENDER: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::n
 static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// Track which mouse button is currently held (0=none, 1=left, 2=right, 3=other).
+/// Track which mouse buttons are currently held using a bitmask.
+/// bit 0 (0x01) = left, bit 1 (0x02) = right, bit 2 (0x04) = other/middle.
 /// Used to post drag events instead of move events during a drag.
 static HELD_BUTTON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+const HELD_LEFT: u8 = 0x01;
+const HELD_RIGHT: u8 = 0x02;
+const HELD_OTHER: u8 = 0x04;
 
 /// Remote screen bounds for clamping virtual position.
 static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -399,7 +404,10 @@ fn mac_vk_to_scancode(vk: u16) -> u16 {
         0x7C => 0x14D, // Right Arrow
         0x7D => 0x150, // Down Arrow
         0x7E => 0x148, // Up Arrow
-        _ => vk, // Pass through unknown
+        _ => {
+            log::debug!("Unknown macOS VK 0x{:X}, passing through as-is", vk);
+            0 // Return 0 (no valid scancode) for unmapped keys
+        }
     }
 }
 
@@ -675,10 +683,11 @@ extern "C" fn event_tap_callback(
             KCG_EVENT_SCROLL_WHEEL => {
                 let dy = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1);
                 let dx = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_2);
-                // Normalize to Windows WHEEL_DELTA convention (120 per notch)
+                // Normalize to Windows WHEEL_DELTA convention (120 per notch).
+                // Use saturating_mul to prevent i32 overflow on high-res trackpads.
                 let _ = sender.send(InputEvent::MouseScroll(MouseScrollEvent {
-                    dx: dx as i32 * 120,
-                    dy: dy as i32 * 120,
+                    dx: (dx as i32).saturating_mul(120),
+                    dy: (dy as i32).saturating_mul(120),
                 }));
             }
 
@@ -1014,11 +1023,14 @@ impl InputInjector for MacOSInputInjector {
             // Use drag event type when a button is held, otherwise macOS
             // won't show live window dragging.
             let held = HELD_BUTTON.load(Ordering::SeqCst);
-            let (event_type, cg_button) = match held {
-                1 => (KCG_EVENT_LEFT_MOUSE_DRAGGED, 0u32),
-                2 => (KCG_EVENT_RIGHT_MOUSE_DRAGGED, 1),
-                3 => (KCG_EVENT_OTHER_MOUSE_DRAGGED, 2),
-                _ => (KCG_EVENT_MOUSE_MOVED, 0),
+            let (event_type, cg_button) = if held & HELD_LEFT != 0 {
+                (KCG_EVENT_LEFT_MOUSE_DRAGGED, 0u32)
+            } else if held & HELD_RIGHT != 0 {
+                (KCG_EVENT_RIGHT_MOUSE_DRAGGED, 1)
+            } else if held & HELD_OTHER != 0 {
+                (KCG_EVENT_OTHER_MOUSE_DRAGGED, 2)
+            } else {
+                (KCG_EVENT_MOUSE_MOVED, 0)
             };
             let source = create_event_source();
             let move_event = CGEventCreateMouseEvent(
@@ -1067,16 +1079,21 @@ impl InputInjector for MacOSInputInjector {
                 (MouseButton::Button5, false) => (KCG_EVENT_OTHER_MOUSE_UP, 4),
             };
 
-            // Track held button so move_mouse can post drag events
+            // Track held buttons via bitmask so move_mouse can post drag events
             if pressed {
-                let held = match button {
-                    MouseButton::Left => 1,
-                    MouseButton::Right => 2,
-                    _ => 3,
+                let bit = match button {
+                    MouseButton::Left => HELD_LEFT,
+                    MouseButton::Right => HELD_RIGHT,
+                    _ => HELD_OTHER,
                 };
-                HELD_BUTTON.store(held, Ordering::SeqCst);
+                HELD_BUTTON.fetch_or(bit, Ordering::SeqCst);
             } else {
-                HELD_BUTTON.store(0, Ordering::SeqCst);
+                let bit = match button {
+                    MouseButton::Left => HELD_LEFT,
+                    MouseButton::Right => HELD_RIGHT,
+                    _ => HELD_OTHER,
+                };
+                HELD_BUTTON.fetch_and(!bit, Ordering::SeqCst);
             }
 
             let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);

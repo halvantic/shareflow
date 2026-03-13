@@ -131,12 +131,21 @@ pub fn start_event_bridge(
 }
 
 /// Start clipboard monitoring loop.
-pub async fn start_clipboard_sync(engine: Arc<Engine>) {
+/// The loop exits when `cancel` is signalled (send `true` to stop).
+pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::watch::Receiver<bool>) {
     log::info!("Clipboard sync started");
     let mut last_known = clipboard::sync::get_clipboard_fingerprint();
 
     loop {
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+            _ = cancel.changed() => {
+                if *cancel.borrow() {
+                    log::info!("Clipboard sync stopped");
+                    break;
+                }
+            }
+        }
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
             // Broadcast to all connected peers regardless of focus state.

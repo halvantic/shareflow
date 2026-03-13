@@ -48,13 +48,13 @@ impl HotkeyDetector {
         log::info!("Hotkey combo set to: {:?} (scancodes: [{}])",
             scancodes,
             scancodes.iter().map(|s| format!("0x{:X}", s)).collect::<Vec<_>>().join(", "));
-        *self.combo.lock().unwrap() = scancodes;
+        *self.combo.lock().unwrap_or_else(|e| e.into_inner()) = scancodes;
     }
 
     /// Process an input event. Returns true if the hotkey was just triggered.
     pub fn process(&self, event: &InputEvent) -> bool {
         if let InputEvent::Key(ke) = event {
-            let mut pressed = self.pressed.lock().unwrap();
+            let mut pressed = self.pressed.lock().unwrap_or_else(|e| e.into_inner());
             if ke.pressed {
                 pressed.insert(ke.scancode);
             } else {
@@ -65,10 +65,11 @@ impl HotkeyDetector {
             }
 
             // Check if all keys in the combo are currently held.
-            let combo = self.combo.lock().unwrap();
+            let combo = self.combo.lock().unwrap_or_else(|e| e.into_inner());
             if !combo.is_empty() && combo.iter().all(|sc| pressed.contains(sc)) {
                 if !self.fired.swap(true, Ordering::SeqCst) {
-                    log::info!("Hotkey triggered! (Ctrl+Alt+Space)");
+                    let combo_str = combo.iter().map(|s| format!("0x{:X}", s)).collect::<Vec<_>>().join("+");
+                    log::info!("Hotkey triggered! ({})", combo_str);
                     return true; // Fire once per press cycle
                 }
             }

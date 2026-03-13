@@ -14,7 +14,13 @@ pub struct Announcement {
     /// Discovery port used for broadcasts. Not serialized in the announcement itself.
     #[serde(skip)]
     pub discovery_port: u16,
+    /// Timestamp to prevent replay attacks. Seconds since UNIX epoch.
+    #[serde(default)]
+    pub timestamp: u64,
 }
+
+/// Maximum age (in seconds) of a discovery announcement before it's discarded.
+const MAX_ANNOUNCEMENT_AGE_SECS: u64 = 30;
 
 /// Broadcast our presence on the LAN.
 pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
@@ -23,7 +29,14 @@ pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
         .set_broadcast(true)
         .map_err(|e| e.to_string())?;
 
-    let payload = serde_json::to_vec(announcement).map_err(|e| e.to_string())?;
+    // Include current timestamp in the announcement for replay protection.
+    let mut ann = announcement.clone();
+    ann.timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let payload = serde_json::to_vec(&ann).map_err(|e| e.to_string())?;
     let mut packet = Vec::with_capacity(4 + payload.len());
     packet.extend_from_slice(MAGIC);
     packet.extend_from_slice(&payload);
@@ -65,6 +78,17 @@ pub fn listen_for_peers(
                         serde_json::from_slice::<Announcement>(&buf[4..len])
                     {
                         if announcement.peer_id != own_peer_id {
+                            // Reject stale announcements to limit replay window.
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            if announcement.timestamp > 0
+                                && now.abs_diff(announcement.timestamp) > MAX_ANNOUNCEMENT_AGE_SECS
+                            {
+                                log::debug!("Discarding stale announcement from {}", announcement.peer_id);
+                                continue;
+                            }
                             callback(announcement, addr);
                         }
                     }

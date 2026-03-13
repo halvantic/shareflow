@@ -126,10 +126,18 @@ impl AppConfig {
     pub fn save(&self) {
         let path = config_path();
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::error!("Failed to create config directory: {}", e);
+                return;
+            }
         }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, json);
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::error!("Failed to write config file: {}", e);
+                }
+            }
+            Err(e) => log::error!("Failed to serialize config: {}", e),
         }
     }
 }

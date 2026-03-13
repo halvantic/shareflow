@@ -8,6 +8,10 @@ use crate::core::protocol::Message;
 use crate::core::screen::get_screens;
 use crate::network::connection::PeerConnection;
 
+/// Sentinel value used to signal a skipped mouse-move injection after coalescing.
+/// Using a named constant makes the intent clear and avoids the raw sentinel pitfall.
+const SKIP_MOVE_SENTINEL: i32 = i32::MIN;
+
 /// Start the TCP/TLS server that accepts incoming peer connections.
 pub async fn start_server(
     engine: Arc<Engine>,
@@ -75,7 +79,7 @@ async fn handle_peer_session(
     // Send Hello
     let hello = Message::Hello {
         peer_id: our_peer_id.clone(),
-        name: our_name,
+        name: our_name.clone(),
         screens: screens.clone(),
     };
     if conn.outgoing.send(hello).await.is_err() {
@@ -97,7 +101,7 @@ async fn handle_peer_session(
             // Send our HelloAck if they sent Hello
             let ack = Message::HelloAck {
                 peer_id: our_peer_id.clone(),
-                name: "".into(),
+                name: our_name.clone(),
                 screens: get_screens(),
             };
             let _ = conn.outgoing.send(ack).await;
@@ -136,11 +140,24 @@ async fn handle_peer_session(
         }
     });
 
-    // Keepalive: send Ping every 5 seconds.
+    // Keepalive: send Ping every 5 seconds, detect dead peers via Pong timeout.
     let ping_outgoing = conn.outgoing.clone();
+    let pong_received = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let pong_flag = pong_received.clone();
     tokio::spawn(async move {
+        let mut missed = 0u32;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if !pong_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                missed += 1;
+                if missed >= 3 {
+                    log::warn!("Peer failed to respond to 3 consecutive pings, closing connection");
+                    break;
+                }
+            } else {
+                missed = 0;
+            }
+            pong_flag.store(false, std::sync::atomic::Ordering::SeqCst);
             if ping_outgoing.send(Message::Ping).await.is_err() {
                 break;
             }
@@ -192,12 +209,12 @@ async fn handle_peer_session(
                                 _ => {} // Other messages handled below in main match
                             }
                             // Use a sentinel to skip the move injection below
-                            mv = crate::core::protocol::MouseMoveEvent { x: i32::MIN, y: i32::MIN };
+                            mv = crate::core::protocol::MouseMoveEvent { x: SKIP_MOVE_SENTINEL, y: SKIP_MOVE_SENTINEL };
                             break;
                         }
                     }
                 }
-                if mv.x != i32::MIN {
+                if mv.x != SKIP_MOVE_SENTINEL {
                     let _ = injector.move_mouse(mv.x, mv.y);
                     let edge_event = crate::input::InputEvent::MouseMove(mv);
                     if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
@@ -274,6 +291,9 @@ async fn handle_peer_session(
             }
             Message::Ping => {
                 let _ = conn.outgoing.send(Message::Pong).await;
+            }
+            Message::Pong => {
+                pong_received.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             msg @ Message::FileStart { .. }
             | msg @ Message::FileChunk { .. }

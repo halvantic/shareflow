@@ -59,6 +59,7 @@ impl PeerConnection {
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
             let mut pending = Vec::new();
+            const MAX_PENDING: usize = 16 * 1024 * 1024; // 16 MB limit
 
             loop {
                 match reader.read(&mut buf).await {
@@ -68,6 +69,11 @@ impl PeerConnection {
                     }
                     Ok(n) => {
                         pending.extend_from_slice(&buf[..n]);
+
+                        if pending.len() > MAX_PENDING {
+                            log::error!("Pending buffer exceeded {} bytes, disconnecting", MAX_PENDING);
+                            break;
+                        }
 
                         // Decode as many complete messages as we can.
                         loop {

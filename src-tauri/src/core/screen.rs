@@ -82,6 +82,11 @@ pub fn detect_edge(x: i32, y: i32, screens: &[ScreenInfo]) -> Option<(String, Ed
         let sw = screen.width;
         let sh = screen.height;
 
+        // Skip screens with zero dimensions to avoid division by zero.
+        if sw == 0 || sh == 0 {
+            continue;
+        }
+
         // Check if cursor is within this screen's bounds (with margin)
         if x >= sx - MARGIN && x <= sx + sw + MARGIN && y >= sy - MARGIN && y <= sy + sh + MARGIN {
             if x <= sx + MARGIN {

@@ -15,20 +15,20 @@ use crate::core::engine::{Engine, FocusState, UiEvent};
 use crate::core::screen::get_screens;
 
 // --- Diagnostic ring-buffer log ---
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
-static DIAG_LOG: std::sync::LazyLock<Mutex<Vec<String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+static DIAG_LOG: std::sync::LazyLock<Mutex<VecDeque<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(VecDeque::new()));
 
 /// Push a diagnostic message (kept in a ring buffer, max 200 entries).
 pub fn diag(msg: String) {
     log::info!("{}", msg);
     if let Ok(mut buf) = DIAG_LOG.lock() {
-        buf.push(msg);
-        let len = buf.len();
-        if len > 200 {
-            buf.drain(..len - 200);
+        if buf.len() >= 200 {
+            buf.pop_front();
         }
+        buf.push_back(msg);
     }
 }
 
@@ -67,7 +67,11 @@ async fn connect_to_peer_cmd(
     state: tauri::State<'_, AppState>,
     address: String,
 ) -> Result<String, String> {
-    let tls_config = network::tls::make_client_config()?;
+    let trusted_fps: Vec<String> = {
+        let config = state.engine.config.lock().await;
+        config.trusted_peers.iter().map(|p| p.cert_fingerprint.clone()).collect()
+    };
+    let tls_config = network::tls::make_client_config(trusted_fps)?;
     let mut conn = network::connection::connect_to_peer(&address, tls_config).await?;
 
     let config = state.engine.config.lock().await;
@@ -129,6 +133,9 @@ async fn connect_to_peer_cmd(
                 while let Some(msg) = conn.incoming.recv().await {
                     match msg {
                         crate::core::protocol::Message::MouseMove(mv) => {
+                            if engine.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             let _ = injector.move_mouse(mv.x, mv.y);
                             // Check if the injected position hits a local edge for switching back.
                             let edge_event = crate::input::InputEvent::MouseMove(mv);
@@ -139,16 +146,25 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
+                            if engine.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
                                 log::error!("Mouse button injection failed: {}", e);
                             }
                         }
                         crate::core::protocol::Message::MouseScroll(ms) => {
+                            if engine.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             if let Err(e) = injector.scroll(ms.dx, ms.dy) {
                                 log::error!("Scroll injection failed: {}", e);
                             }
                         }
                         crate::core::protocol::Message::Key(ke) => {
+                            if engine.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
                                 log::error!("Key injection failed: {}", e);
                             }
@@ -357,7 +373,7 @@ async fn send_camera_frame(
 
 #[tauri::command]
 fn get_diagnostics() -> Vec<String> {
-    DIAG_LOG.lock().map(|buf| buf.clone()).unwrap_or_default()
+    DIAG_LOG.lock().map(|buf| buf.iter().cloned().collect()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -641,7 +657,11 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
 
 /// Auto-connect to a peer (reuses connection logic from connect_to_peer_cmd).
 async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<String, String> {
-    let tls_config = network::tls::make_client_config()?;
+    let trusted_fps: Vec<String> = {
+        let config = engine.config.lock().await;
+        config.trusted_peers.iter().map(|p| p.cert_fingerprint.clone()).collect()
+    };
+    let tls_config = network::tls::make_client_config(trusted_fps)?;
     let mut conn = network::connection::connect_to_peer(address, tls_config).await?;
 
     let config = engine.config.lock().await;
@@ -703,6 +723,9 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                 while let Some(msg) = conn.incoming.recv().await {
                     match msg {
                         crate::core::protocol::Message::MouseMove(mv) => {
+                            if engine2.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             let _ = injector.move_mouse(mv.x, mv.y);
                             let edge_event = crate::input::InputEvent::MouseMove(mv);
                             if let Some((pid, msg)) = engine2.handle_local_input(edge_event).await {
@@ -712,12 +735,21 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                             }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
+                            if engine2.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             let _ = injector.press_mouse_button(mb.button, mb.pressed);
                         }
                         crate::core::protocol::Message::MouseScroll(ms) => {
+                            if engine2.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             let _ = injector.scroll(ms.dx, ms.dy);
                         }
                         crate::core::protocol::Message::Key(ke) => {
+                            if engine2.get_focus().await != FocusState::Local {
+                                continue;
+                            }
                             let _ = injector.send_key(ke.scancode, ke.pressed);
                         }
                         crate::core::protocol::Message::SwitchFocus {
@@ -831,22 +863,22 @@ pub fn run() {
             add_trusted_host,
             remove_trusted_host,
         ])
-        // On Windows, hide the window to tray when minimized or closed
-        // instead of leaving it in the taskbar.
+        // Hide to tray when the window is closed on Windows and macOS,
+        // instead of quitting. Use Quit from the tray menu to fully exit.
         .on_window_event(|_window, _event| {
-            #[cfg(target_os = "windows")]
-            match _event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    // Prevent actual close — hide to tray instead
-                    api.prevent_close();
-                    let _ = _window.hide();
-                }
-                _ => {}
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            if let WindowEvent::CloseRequested { api, .. } = _event {
+                api.prevent_close();
+                let _ = _window.hide();
             }
         })
         .setup(move |app| {
             let engine = engine.clone();
             let app_handle = app.handle().clone();
+
+            // On macOS, remove the Dock icon so the app lives only in the menu bar.
+            #[cfg(target_os = "macos")]
+            app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Set up system tray
             if let Err(e) = setup_tray(app, engine.clone()) {
@@ -900,8 +932,9 @@ pub fn run() {
 
             // Start clipboard sync.
             let engine_clip = engine.clone();
+            let (_clip_stop_tx, clip_stop_rx) = tokio::sync::watch::channel(false);
             tauri::async_runtime::spawn(async move {
-                core::runtime::start_clipboard_sync(engine_clip).await;
+                core::runtime::start_clipboard_sync(engine_clip, clip_stop_rx).await;
             });
 
             // Monitor display configuration changes (resolution, wake from sleep).
@@ -941,6 +974,7 @@ pub fn run() {
                     name: config.machine_name.clone(),
                     port: config.port,
                     discovery_port: config.discovery_port,
+                    timestamp: 0, // filled in by broadcast_presence
                 };
                 let own_peer_id = config.peer_id.clone();
                 let discovery_port = config.discovery_port;
@@ -956,6 +990,8 @@ pub fn run() {
                 let ui_events = engine_disc.ui_events.clone();
                 let peers = engine_disc.peers.clone();
                 let engine_auto = engine_disc.clone();
+                let connecting_peers: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+                    Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
                 tokio::task::spawn_blocking(move || {
                     let _ = network::discovery::listen_for_peers(&own_peer_id, discovery_port, |ann, addr| {
                         let address = format!("{}:{}", addr.ip(), ann.port);
@@ -984,6 +1020,17 @@ pub fn run() {
                             let app_handle_ac = app_handle_disc.clone();
                             let peer_id = ann.peer_id.clone();
                             let addr_clone = address.clone();
+                            let connecting = connecting_peers.clone();
+
+                            // Guard against duplicate auto-connect attempts
+                            {
+                                let mut set = connecting.lock().unwrap_or_else(|e| e.into_inner());
+                                if set.contains(&peer_id) {
+                                    return; // Already connecting to this peer
+                                }
+                                set.insert(peer_id.clone());
+                            }
+
                             tauri::async_runtime::spawn(async move {
                                 let config = engine_ac.config.lock().await;
                                 let auto_connect = config.auto_connect;
@@ -1001,6 +1048,8 @@ pub fn run() {
                                         }
                                     }
                                 }
+                                // Remove from connecting set so a future rediscovery can retry
+                                connecting.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
                             });
                         }
                     });

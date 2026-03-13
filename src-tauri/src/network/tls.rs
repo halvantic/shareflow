@@ -41,6 +41,14 @@ pub fn get_or_create_identity() -> Result<(Vec<CertificateDer<'static>>, Private
     std::fs::write(&cert_path, cert.pem()).map_err(|e| e.to_string())?;
     std::fs::write(&key_path, key_pair.serialize_pem()).map_err(|e| e.to_string())?;
 
+    // Restrict private key file permissions to owner-only on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to set key file permissions: {}", e))?;
+    }
+
     let cert_der = CertificateDer::from(cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
 
@@ -57,49 +65,86 @@ pub fn make_server_config() -> Result<Arc<rustls::ServerConfig>, String> {
     Ok(Arc::new(config))
 }
 
-/// Create a rustls ClientConfig that accepts any server cert
-/// (we do our own cert pinning at the application level).
-pub fn make_client_config() -> Result<Arc<rustls::ClientConfig>, String> {
+/// Compute SHA-256 fingerprint of a DER-encoded certificate.
+pub fn cert_fingerprint(cert_der: &[u8]) -> String {
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(cert_der);
+    hash.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":")
+}
+
+/// Create a rustls ClientConfig that verifies the server certificate
+/// against trusted peer fingerprints (if any are configured).
+pub fn make_client_config(trusted_fingerprints: Vec<String>) -> Result<Arc<rustls::ClientConfig>, String> {
     let config = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+        .with_custom_certificate_verifier(Arc::new(PinningCertVerifier { trusted_fingerprints }))
         .with_no_client_auth();
     Ok(Arc::new(config))
 }
 
-/// Certificate verifier that accepts any cert.
-/// We handle trust via application-level cert pinning instead.
+/// Certificate verifier that checks the peer's certificate fingerprint
+/// against a list of trusted fingerprints. If no fingerprints are configured
+/// (first connection), it accepts the cert and logs the fingerprint for pinning.
 #[derive(Debug)]
-struct AcceptAnyCert;
+struct PinningCertVerifier {
+    trusted_fingerprints: Vec<String>,
+}
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+impl rustls::client::danger::ServerCertVerifier for PinningCertVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        let fp = cert_fingerprint(end_entity.as_ref());
+
+        if self.trusted_fingerprints.is_empty() {
+            // No trusted peers configured yet — accept (TOFU: trust on first use)
+            log::warn!("No trusted peer fingerprints configured. Accepting cert with fingerprint: {}", fp);
+            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        }
+
+        if self.trusted_fingerprints.iter().any(|t| t == &fp) {
+            log::info!("Peer certificate fingerprint verified: {}", fp);
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            log::error!("Peer certificate fingerprint MISMATCH: {}. Connection rejected.", fp);
+            Err(rustls::Error::General(format!(
+                "Certificate fingerprint {} not in trusted peers list",
+                fp
+            )))
+        }
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
