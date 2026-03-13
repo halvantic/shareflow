@@ -1,45 +1,108 @@
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
 use crate::core::protocol::ClipboardContent;
+use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Set when clipboard was updated by a remote peer, to avoid re-broadcasting it back.
 static REMOTE_SET: AtomicBool = AtomicBool::new(false);
 
-/// Get the current clipboard text content.
-pub fn get_clipboard_text() -> Option<String> {
+/// Lightweight fingerprint for change detection without storing full image data.
+#[derive(Clone, PartialEq)]
+pub enum ClipboardFingerprint {
+    Text(String),
+    Image { width: usize, height: usize, hash: u64 },
+}
+
+/// Compute a fast hash of image data by sampling the head and tail.
+fn sample_hash(width: usize, height: usize, rgba: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    width.hash(&mut h);
+    height.hash(&mut h);
+    rgba.len().hash(&mut h);
+    let n = rgba.len().min(4096);
+    rgba[..n].hash(&mut h);
+    if rgba.len() > n {
+        rgba[rgba.len() - n..].hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Get the current clipboard content (text or image).
+pub fn get_clipboard_content() -> Option<ClipboardContent> {
     let mut clipboard = Clipboard::new().ok()?;
-    clipboard.get_text().ok()
+    // Try text first.
+    if let Ok(text) = clipboard.get_text() {
+        if !text.is_empty() {
+            return Some(ClipboardContent::Text(text));
+        }
+    }
+    // Fall back to image.
+    if let Ok(img) = clipboard.get_image() {
+        return Some(ClipboardContent::Image {
+            width: img.width,
+            height: img.height,
+            rgba: img.bytes.into_owned(),
+        });
+    }
+    None
+}
+
+/// Build a fingerprint from existing content (avoids a second clipboard read).
+fn fingerprint_of(content: &Option<ClipboardContent>) -> Option<ClipboardFingerprint> {
+    content.as_ref().map(|c| match c {
+        ClipboardContent::Text(t) => ClipboardFingerprint::Text(t.clone()),
+        ClipboardContent::Image { width, height, rgba } => ClipboardFingerprint::Image {
+            width: *width,
+            height: *height,
+            hash: sample_hash(*width, *height, rgba),
+        },
+    })
+}
+
+/// Get a fingerprint of the current clipboard for initialising change tracking.
+pub fn get_clipboard_fingerprint() -> Option<ClipboardFingerprint> {
+    fingerprint_of(&get_clipboard_content())
 }
 
 /// Set the local clipboard to the content received from a remote peer.
 /// Marks the content as remote-originated so the sync loop won't re-broadcast it.
 pub fn apply_remote_clipboard(content: ClipboardContent) {
-    match content {
-        ClipboardContent::Text(text) => {
-            if let Ok(mut clipboard) = Clipboard::new() {
-                if clipboard.set_text(&text).is_ok() {
-                    // Mark as remote-set so poll_clipboard_change won't echo it back.
-                    REMOTE_SET.store(true, Ordering::SeqCst);
-                }
-            }
+    if let Ok(mut clipboard) = Clipboard::new() {
+        let ok = match &content {
+            ClipboardContent::Text(text) => clipboard.set_text(text).is_ok(),
+            ClipboardContent::Image { width, height, rgba } => clipboard
+                .set_image(ImageData {
+                    width: *width,
+                    height: *height,
+                    bytes: Cow::Borrowed(rgba),
+                })
+                .is_ok(),
+        };
+        if ok {
+            REMOTE_SET.store(true, Ordering::SeqCst);
         }
     }
 }
 
 /// Monitor the clipboard for locally-originated changes (polling approach).
 ///
-/// Updates `last_known` unconditionally. Returns the new text only when the change
+/// Updates `last_known` unconditionally. Returns the new content only when the change
 /// was local (not from a remote peer). Returns `None` for remote-set changes to
 /// prevent ping-pong broadcast loops.
-pub fn poll_clipboard_change(last_known: &mut Option<String>) -> Option<String> {
-    let current = get_clipboard_text();
-    if current == *last_known {
+pub fn poll_clipboard_change(
+    last_known: &mut Option<ClipboardFingerprint>,
+) -> Option<ClipboardContent> {
+    let content = get_clipboard_content();
+    let fp = fingerprint_of(&content);
+
+    if fp == *last_known {
         return None;
     }
 
     // Clipboard changed — update our tracking state.
-    let new_text = current.clone();
-    *last_known = current;
+    *last_known = fp;
 
     // If this change was triggered by apply_remote_clipboard, suppress the broadcast
     // to prevent a loop: A→B→A→B…
@@ -47,5 +110,5 @@ pub fn poll_clipboard_change(last_known: &mut Option<String>) -> Option<String> 
         return None;
     }
 
-    new_text
+    content
 }

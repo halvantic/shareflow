@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::clipboard;
 use crate::core::engine::{Engine, FocusState};
-use crate::core::protocol::{ClipboardContent, Message};
+use crate::core::protocol::Message;
 use crate::input::InputEvent;
 
 /// PS/2 scancodes for copy/paste shortcut detection (same values on Windows and macOS
@@ -53,13 +53,13 @@ pub async fn start_input_loop(
                         let engine_clone = engine.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(50)).await;
-                            if let Some(text) = clipboard::sync::get_clipboard_text() {
+                            if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
                                     let _ = peer
                                         .sender
                                         .send(Message::ClipboardUpdate {
-                                            content: ClipboardContent::Text(text.clone()),
+                                            content: content.clone(),
                                         })
                                         .await;
                                 }
@@ -75,13 +75,11 @@ pub async fn start_input_loop(
                     if let FocusState::Remote(ref peer_id) = focus {
                         // Before forwarding Ctrl+V to the remote machine, push our local
                         // clipboard so the remote pastes our content instead of its own.
-                        if let Some(text) = clipboard::sync::get_clipboard_text() {
+                        if let Some(content) = clipboard::sync::get_clipboard_content() {
                             let _ = engine
                                 .send_to_peer(
                                     peer_id,
-                                    Message::ClipboardUpdate {
-                                        content: ClipboardContent::Text(text),
-                                    },
+                                    Message::ClipboardUpdate { content },
                                 )
                                 .await;
                         }
@@ -135,12 +133,12 @@ pub fn start_event_bridge(
 /// Start clipboard monitoring loop.
 pub async fn start_clipboard_sync(engine: Arc<Engine>) {
     log::info!("Clipboard sync started");
-    let mut last_known: Option<String> = clipboard::sync::get_clipboard_text();
+    let mut last_known = clipboard::sync::get_clipboard_fingerprint();
 
     loop {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Some(new_text) = clipboard::sync::poll_clipboard_change(&mut last_known) {
+        if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
             // Broadcast to all connected peers regardless of focus state.
             // This ensures that whichever machine you're currently controlling always
             // has your latest clipboard content available for pasting.
@@ -149,7 +147,7 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>) {
                 let _ = peer
                     .sender
                     .send(Message::ClipboardUpdate {
-                        content: ClipboardContent::Text(new_text.clone()),
+                        content: content.clone(),
                     })
                     .await;
             }

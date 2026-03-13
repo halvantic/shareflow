@@ -64,7 +64,59 @@ pub fn set_suppress(suppress: bool) {
             }
         }
     }
+    if !suppress {
+        // When focus returns to the local Mac, clear any stuck modifier keys.
+        // If a modifier key-down was injected (e.g. Control from the remote machine)
+        // but the key-up was lost during a screen transition, the HID system
+        // thinks the modifier is still held. On macOS, a stuck Control key causes
+        // every left-click to become a right-click (Control+Click = Right-Click).
+        reset_injected_modifiers();
+    }
     SUPPRESS.store(suppress, Ordering::SeqCst);
+}
+
+/// Release all injected modifier keys and reset INJECTED_MOD_FLAGS.
+/// Posts synthetic key-up events for all modifier keys to clean up HID state.
+fn reset_injected_modifiers() {
+    let flags = INJECTED_MOD_FLAGS.swap(0, Ordering::SeqCst);
+    if flags == 0 {
+        return;
+    }
+    log::info!("Resetting stuck modifier flags: 0x{:X}", flags);
+
+    // List of all modifier virtual keycodes to release
+    let modifier_vks: &[u16] = &[
+        0x38, // Left Shift
+        0x3C, // Right Shift
+        0x3B, // Left Control
+        0x3E, // Right Control
+        0x3A, // Left Option
+        0x3D, // Right Option
+        0x37, // Left Command
+        0x36, // Right Command
+    ];
+
+    unsafe {
+        let source = create_event_source();
+        for &vk in modifier_vks {
+            if let Some((indep, dep)) = modifier_flags_for_vk(vk) {
+                // Only release modifiers that were actually held
+                if flags & (indep | dep) != 0 {
+                    let event = CGEventCreateKeyboardEvent(source, vk, false);
+                    if !event.is_null() {
+                        CGEventSetType(event, KCG_EVENT_FLAGS_CHANGED);
+                        CGEventSetFlags(event, 0);
+                        CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                        CGEventPost(KCG_HID_EVENT_TAP, event);
+                        CFRelease(event);
+                    }
+                }
+            }
+        }
+        if !source.is_null() {
+            CFRelease(source);
+        }
+    }
 }
 
 /// Initialize remote mouse control: set virtual position to the entry point on the remote screen.
@@ -1025,6 +1077,13 @@ impl InputInjector for MacOSInputInjector {
             let event = CGEventCreateMouseEvent(source, event_type, pos, cg_button);
             if !event.is_null() {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                // Explicitly set modifier flags to our tracked state. Without this,
+                // CGEventCreateMouseEvent inherits flags from the HID system state
+                // which can include a stale Control flag. On macOS, Control+Click
+                // is converted to Right-Click by Cocoa, so a stuck Control modifier
+                // causes every left click to behave as a right click.
+                let mod_flags = INJECTED_MOD_FLAGS.load(Ordering::SeqCst);
+                CGEventSetFlags(event, mod_flags);
                 // Set click count for multi-click detection (double-click, triple-click).
                 // macOS requires this field set explicitly on synthetic events —
                 // it does NOT auto-detect multi-clicks from timing on CGEventPost'd events.

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::core::config::{AppConfig, ScreenEdge};
-use crate::core::protocol::{ClipboardContent, Message, PeerId, ScreenInfo};
+use crate::core::protocol::{Message, PeerId, ScreenInfo};
 use crate::core::screen::{detect_edge, EdgeHit};
 use crate::file_transfer::receiver::FileReceiver;
 use crate::input::InputEvent;
@@ -235,14 +235,12 @@ impl Engine {
 
         // Push our local clipboard to the remote peer immediately so that Ctrl+V
         // on the remote machine uses our clipboard content rather than its own.
-        if let Some(text) = crate::clipboard::sync::get_clipboard_text() {
+        if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
             let peers = self.peers.lock().await;
             if let Some(peer) = peers.get(peer_id) {
                 let _ = peer
                     .sender
-                    .send(Message::ClipboardUpdate {
-                        content: ClipboardContent::Text(text),
-                    })
+                    .send(Message::ClipboardUpdate { content })
                     .await;
             }
         }

@@ -129,6 +129,11 @@ pub struct ScreenInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClipboardContent {
     Text(String),
+    Image {
+        width: usize,
+        height: usize,
+        rgba: Vec<u8>,
+    },
 }
 
 /// Serialize a message to bytes (length-prefixed bincode).
