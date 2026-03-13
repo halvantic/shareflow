@@ -78,6 +78,11 @@ pub enum Message {
     /// Audio chunk from a peer (WebM/Opus encoded bytes).
     AudioChunk { data: Vec<u8> },
 
+    /// Notify peers that our screen configuration has changed (e.g. after wake).
+    ScreenUpdate {
+        screens: Vec<ScreenInfo>,
+    },
+
     /// Ping/pong for keepalive.
     Ping,
     Pong,

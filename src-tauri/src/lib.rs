@@ -188,6 +188,9 @@ async fn connect_to_peer_cmd(
                                 })
                                 .await;
                         }
+                        crate::core::protocol::Message::ScreenUpdate { screens } => {
+                            engine.update_peer_screens(&remote_peer_id, screens).await;
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -752,6 +755,9 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                                 })
                                 .await;
                         }
+                        crate::core::protocol::Message::ScreenUpdate { screens } => {
+                            engine2.update_peer_screens(&remote_peer_id, screens).await;
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -897,6 +903,33 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 core::runtime::start_clipboard_sync(engine_clip).await;
             });
+
+            // Monitor display configuration changes (resolution, wake from sleep).
+            // When the display config changes, refresh local_screens and broadcast
+            // the updated info to all connected peers so mouse bounds stay correct.
+            #[cfg(target_os = "macos")]
+            {
+                let engine_display = engine.clone();
+                let display_rx = input::start_display_change_monitor();
+                tauri::async_runtime::spawn(async move {
+                    // Bridge from sync receiver to async with debouncing.
+                    // macOS fires multiple callbacks per reconfiguration event,
+                    // so we debounce with a short delay.
+                    loop {
+                        match display_rx.recv() {
+                            Ok(()) => {
+                                // Debounce: wait a moment for the display config to stabilize
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                // Drain any additional notifications that arrived during debounce
+                                while display_rx.try_recv().is_ok() {}
+                                diag("Display configuration changed — refreshing screens".into());
+                                engine_display.refresh_and_broadcast_screens().await;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
 
             // Start LAN auto-discovery.
             let engine_disc = engine.clone();

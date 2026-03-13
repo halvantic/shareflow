@@ -286,6 +286,11 @@ extern "C" {
     fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
     fn CGDisplayIsMain(display: CGDirectDisplayID) -> bool;
 
+    fn CGDisplayRegisterReconfigurationCallback(
+        callback: unsafe extern "C" fn(display: CGDirectDisplayID, flags: u32, user_info: *mut c_void),
+        user_info: *mut c_void,
+    ) -> i32;
+
     fn AXIsProcessTrusted() -> bool;
 
     static kCFRunLoopCommonModes: CFStringRef;
@@ -1337,4 +1342,40 @@ pub fn get_screens_macos() -> Vec<crate::core::protocol::ScreenInfo> {
     }
 
     screens
+}
+
+// --- Display reconfiguration monitoring ---
+
+/// Global channel to notify the async runtime when displays change.
+static DISPLAY_CHANGE_SENDER: OnceLock<std::sync::mpsc::Sender<()>> = OnceLock::new();
+
+/// CGDisplayReconfigurationCallback — fires on display connect/disconnect/resize/wake.
+/// The kCGDisplayBeginConfigurationFlag (1 << 0) fires at the START of the change;
+/// we only act once the reconfiguration is complete (flag not set).
+unsafe extern "C" fn display_reconfig_callback(
+    _display: CGDirectDisplayID,
+    flags: u32,
+    _user_info: *mut c_void,
+) {
+    const K_CG_DISPLAY_BEGIN_CONFIGURATION_FLAG: u32 = 1;
+    if flags & K_CG_DISPLAY_BEGIN_CONFIGURATION_FLAG != 0 {
+        return; // Reconfiguration starting — wait for the completion callback.
+    }
+    if let Some(tx) = DISPLAY_CHANGE_SENDER.get() {
+        let _ = tx.send(());
+    }
+}
+
+/// Start monitoring for display configuration changes (resolution, wake, etc.).
+/// Returns a receiver that fires whenever displays are reconfigured.
+pub fn start_display_change_monitor() -> std::sync::mpsc::Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = DISPLAY_CHANGE_SENDER.set(tx);
+
+    unsafe {
+        CGDisplayRegisterReconfigurationCallback(display_reconfig_callback, std::ptr::null_mut());
+    }
+    log::info!("Display reconfiguration monitor registered");
+
+    rx
 }

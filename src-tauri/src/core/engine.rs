@@ -286,6 +286,35 @@ impl Engine {
             .await;
     }
 
+    /// Update a peer's screen info (e.g. after they wake from sleep).
+    pub async fn update_peer_screens(&self, peer_id: &str, screens: Vec<crate::core::protocol::ScreenInfo>) {
+        let mut peers = self.peers.lock().await;
+        if let Some(peer) = peers.get_mut(peer_id) {
+            log::info!(
+                "Updated screens for peer {}: {:?}",
+                peer_id,
+                screens.iter().map(|s| format!("{}x{}", s.width, s.height)).collect::<Vec<_>>()
+            );
+            peer.screens = screens;
+        }
+    }
+
+    /// Refresh local screens and broadcast to all connected peers.
+    pub async fn refresh_and_broadcast_screens(&self) {
+        let screens = crate::core::screen::get_screens();
+        log::info!(
+            "Local screens refreshed: {:?}",
+            screens.iter().map(|s| format!("{}x{}", s.width, s.height)).collect::<Vec<_>>()
+        );
+        *self.local_screens.lock().await = screens.clone();
+
+        let msg = Message::ScreenUpdate { screens };
+        let peers = self.peers.lock().await;
+        for peer in peers.values() {
+            let _ = peer.sender.send(msg.clone()).await;
+        }
+    }
+
     /// Remove a disconnected peer.
     pub async fn remove_peer(&self, peer_id: &str) {
         self.peers.lock().await.remove(peer_id);

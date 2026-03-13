@@ -269,6 +269,9 @@ async fn handle_peer_session(
                     })
                     .await;
             }
+            Message::ScreenUpdate { screens } => {
+                engine.update_peer_screens(&remote_peer_id, screens).await;
+            }
             Message::Ping => {
                 let _ = conn.outgoing.send(Message::Pong).await;
             }

@@ -130,3 +130,10 @@ pub fn create_capture_with_channel() -> (
 ) {
     linux::LinuxInputCapture::new_with_channel()
 }
+
+/// Start monitoring for display configuration changes.
+/// Returns a receiver that fires when screens are reconfigured (e.g. wake from sleep).
+#[cfg(target_os = "macos")]
+pub fn start_display_change_monitor() -> std::sync::mpsc::Receiver<()> {
+    macos::start_display_change_monitor()
+}
