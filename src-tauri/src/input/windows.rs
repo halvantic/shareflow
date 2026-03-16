@@ -93,12 +93,23 @@ impl InputCapture for WindowsInputCapture {
             HOOK_THREAD_ID.store(tid, Ordering::SeqCst);
 
             unsafe {
-                let mouse_hook =
-                    SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0)
-                        .expect("Failed to set mouse hook");
-                let kb_hook =
-                    SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0)
-                        .expect("Failed to set keyboard hook");
+                let mouse_hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        log::error!("Failed to set mouse hook: {:?}", e);
+                        HOOK_ACTIVE.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+                let kb_hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        log::error!("Failed to set keyboard hook: {:?}", e);
+                        let _ = UnhookWindowsHookEx(mouse_hook);
+                        HOOK_ACTIVE.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
 
                 log::info!("Low-level hooks installed on thread {}", tid);
 

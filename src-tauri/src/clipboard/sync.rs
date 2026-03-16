@@ -4,9 +4,16 @@ use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Set when clipboard was updated by a remote peer, to avoid re-broadcasting it back.
 static REMOTE_SET: AtomicBool = AtomicBool::new(false);
+
+/// Global mutex to serialize all clipboard access.
+/// On Windows, arboard uses OLE clipboard APIs that are not thread-safe —
+/// concurrent access from multiple threads causes access violations (silent crash).
+static CLIPBOARD_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
 
 /// Lightweight fingerprint for change detection without storing full image data.
 #[derive(Clone, PartialEq)]
@@ -31,6 +38,7 @@ fn sample_hash(width: usize, height: usize, rgba: &[u8]) -> u64 {
 
 /// Get the current clipboard content (text or image).
 pub fn get_clipboard_content() -> Option<ClipboardContent> {
+    let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut clipboard = Clipboard::new().ok()?;
     // Try text first.
     if let Ok(text) = clipboard.get_text() {
@@ -69,6 +77,7 @@ pub fn get_clipboard_fingerprint() -> Option<ClipboardFingerprint> {
 /// Set the local clipboard to the content received from a remote peer.
 /// Marks the content as remote-originated so the sync loop won't re-broadcast it.
 pub fn apply_remote_clipboard(content: ClipboardContent) {
+    let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(mut clipboard) = Clipboard::new() {
         let ok = match &content {
             ClipboardContent::Text(text) => clipboard.set_text(text).is_ok(),

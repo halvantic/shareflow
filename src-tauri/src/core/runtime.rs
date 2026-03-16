@@ -94,7 +94,7 @@ pub async fn start_input_loop(
                     "TX key sc=0x{:X} pressed={} → {}",
                     ke.scancode,
                     ke.pressed,
-                    &peer_id[..8]
+                    &peer_id[..peer_id.len().min(8)]
                 ));
             }
             if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
@@ -127,7 +127,10 @@ pub fn start_event_bridge(
             }
             log::info!("Event bridge thread ended");
         })
-        .expect("Failed to spawn event bridge thread");
+        .unwrap_or_else(|e| {
+            log::error!("Failed to spawn event bridge thread: {}", e);
+            panic!("Cannot spawn event bridge thread: {}", e);
+        });
 }
 
 /// Start clipboard monitoring loop.

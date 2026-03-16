@@ -561,7 +561,10 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
 
     let app_handle = app.handle().clone();
     let _tray = TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().cloned().unwrap())
+        .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
+            log::warn!("Default window icon not found, using empty icon");
+            tauri::image::Image::new(&[], 0, 0)
+        }))
         .tooltip("ShareFlow - Keyboard & Mouse Sharing")
         .menu(&initial_menu)
         .on_menu_event(move |app, event| {
@@ -578,7 +581,7 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
                     std::process::exit(0);
                 }
                 _ if id.starts_with("peer_") => {
-                    let peer_id = id.strip_prefix("peer_").unwrap().to_string();
+                    let peer_id = id.strip_prefix("peer_").unwrap_or(&id).to_string();
                     if let Some(state) = app.try_state::<AppState>() {
                         let engine = state.engine.clone();
                         tauri::async_runtime::spawn(async move {
@@ -846,6 +849,83 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Install a global panic hook that writes to a crash log file before exiting.
+    // Since windows_subsystem = "windows" suppresses panic dialogs, this ensures
+    // panics are always recorded for debugging.
+    std::panic::set_hook(Box::new(|info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic payload".to_string()
+        };
+
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let message = format!(
+            "[epoch:{}] PANIC at {}: {}\n",
+            timestamp,
+            location,
+            payload
+        );
+
+        log::error!("{}", message.trim());
+
+        // Write to a crash log file next to the executable or in APPDATA
+        let crash_path = {
+            #[cfg(target_os = "windows")]
+            {
+                std::env::var("APPDATA")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join("shareflow")
+                    .join("crash.log")
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let mut p = std::path::PathBuf::from(
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+                );
+                p.push("Library");
+                p.push("Application Support");
+                p.push("shareflow");
+                p.push("crash.log");
+                p
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                let mut p = std::path::PathBuf::from(
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+                );
+                p.push(".local");
+                p.push("share");
+                p.push("shareflow");
+                p.push("crash.log");
+                p
+            }
+        };
+
+        let _ = std::fs::create_dir_all(crash_path.parent().unwrap_or(std::path::Path::new(".")));
+        // Append to crash log so we can see history
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&crash_path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(message.as_bytes())
+            });
+    }));
 
     let config = AppConfig::load();
     log::info!(

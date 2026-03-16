@@ -170,7 +170,7 @@ impl Engine {
                                 target_screen.y + (ratio * target_screen.height as f64) as i32,
                             ),
                             EdgeHit::Left => (
-                                target_screen.x + target_screen.width - 1 - ENTRY_INSET,
+                                target_screen.x + target_screen.width - ENTRY_INSET,
                                 target_screen.y + (ratio * target_screen.height as f64) as i32,
                             ),
                             EdgeHit::Bottom => (
@@ -179,9 +179,12 @@ impl Engine {
                             ),
                             EdgeHit::Top => (
                                 target_screen.x + (ratio * target_screen.width as f64) as i32,
-                                target_screen.y + target_screen.height - 1 - ENTRY_INSET,
+                                target_screen.y + target_screen.height - ENTRY_INSET,
                             ),
                         };
+                        // Clamp to screen bounds to prevent cursor landing outside
+                        let entry_x = entry_x.clamp(target_screen.x, target_screen.x + target_screen.width - 1);
+                        let entry_y = entry_y.clamp(target_screen.y, target_screen.y + target_screen.height - 1);
 
                         return Some((
                             neighbor.peer_id.clone(),

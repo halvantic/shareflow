@@ -70,7 +70,7 @@ impl FileReceiver {
 
         self.transfers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(transfer_id.to_string(), incoming);
 
         log::info!(
@@ -85,7 +85,7 @@ impl FileReceiver {
 
     /// Write a chunk of data. Returns (received_bytes, total_bytes, file_name).
     pub fn write_chunk(&self, transfer_id: &str, offset: u64, data: &[u8]) -> Result<(u64, u64, String), String> {
-        let mut transfers = self.transfers.lock().unwrap();
+        let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
         let incoming = transfers
             .get_mut(transfer_id)
             .ok_or_else(|| format!("Unknown transfer: {}", transfer_id))?;
@@ -115,7 +115,7 @@ impl FileReceiver {
 
     /// Finalize a completed transfer.
     pub fn finish(&self, transfer_id: &str) -> Result<(String, PathBuf, u64), String> {
-        let mut transfers = self.transfers.lock().unwrap();
+        let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
         let incoming = transfers
             .remove(transfer_id)
             .ok_or_else(|| format!("Unknown transfer: {}", transfer_id))?;
@@ -135,7 +135,7 @@ impl FileReceiver {
 
     /// Cancel a transfer and clean up.
     pub fn cancel(&self, transfer_id: &str) {
-        let mut transfers = self.transfers.lock().unwrap();
+        let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(incoming) = transfers.remove(transfer_id) {
             drop(incoming.writer);
             let _ = std::fs::remove_file(&incoming.path);

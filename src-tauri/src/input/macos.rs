@@ -1121,7 +1121,7 @@ impl InputInjector for MacOSInputInjector {
                 // it does NOT auto-detect multi-clicks from timing on CGEventPost'd events.
                 let click_count = {
                     let state = get_click_state();
-                    let mut cs = state.lock().unwrap();
+                    let mut cs = state.lock().unwrap_or_else(|e| e.into_inner());
                     if pressed {
                         cs.press(button, pos.x as i32, pos.y as i32)
                     } else {
