@@ -26,24 +26,30 @@ pub async fn start_input_loop(
     // Track modifier key state for copy/paste shortcut detection.
     let mut ctrl_held = false;
     let mut cmd_held = false;
+    let mut last_focus = engine.get_focus().await;
 
     while let Some(event) = event_rx.recv().await {
-        // Check if focus switched to local — reset modifier state to prevent stale keys
+        // Check if focus switched — if so, reset modifier state to prevent stale keys
         // after device switching (e.g., Ctrl held on Windows, key-up on Mac).
         let current_focus = engine.get_focus().await;
-        if matches!(current_focus, FocusState::Local) {
-            // When returning to local focus, sync modifier state with actual keyboard
-            // by reading the held modifier keys via GetAsyncKeyState on Windows
-            #[cfg(target_os = "windows")]
-            {
-                use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-                unsafe {
-                    // Check if Ctrl keys are actually held
-                    let ctrl_l = (GetAsyncKeyState(0xA2) as u16) & 0x8000 != 0; // VK_LCONTROL
-                    let ctrl_r = (GetAsyncKeyState(0xA3) as u16) & 0x8000 != 0; // VK_RCONTROL
-                    ctrl_held = ctrl_l || ctrl_r;
+        if current_focus != last_focus {
+            if matches!(current_focus, FocusState::Local) {
+                // Sync modifier state with actual keyboard when returning to local focus
+                #[cfg(target_os = "windows")]
+                {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                    unsafe {
+                        let ctrl_l = (GetAsyncKeyState(0xA2) as u16) & 0x8000 != 0; // VK_LCONTROL
+                        let ctrl_r = (GetAsyncKeyState(0xA3) as u16) & 0x8000 != 0; // VK_RCONTROL
+                        ctrl_held = ctrl_l || ctrl_r;
+                    }
                 }
+            } else {
+                // Switching away from local — reset modifiers
+                ctrl_held = false;
+                cmd_held = false;
             }
+            last_focus = current_focus.clone();
         }
 
         // Track modifier keys from keyboard events.
