@@ -390,6 +390,8 @@ unsafe extern "system" fn mouse_hook_proc(
             if suppress {
                 return LRESULT(1);
             }
+            // Event not suppressed — pass through to OS
+            return LRESULT(0);
         }
     }
 
@@ -467,9 +469,12 @@ unsafe extern "system" fn keyboard_hook_proc(
             let _ = tx.send(event);
         }
 
+        // Only suppress if focus is on remote machine
         if SUPPRESS.load(Ordering::SeqCst) {
             return LRESULT(1);
         }
+        // Key not suppressed — pass through to OS
+        return LRESULT(0);
     }
 
     CallNextHookEx(None, code, wparam, lparam)
