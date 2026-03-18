@@ -67,6 +67,7 @@ pub async fn start_input_loop(
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
+                                log::debug!("Copy handler: broadcasting clipboard to peers");
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
                                     let _ = peer
@@ -76,6 +77,8 @@ pub async fn start_input_loop(
                                         })
                                         .await;
                                 }
+                            } else {
+                                log::warn!("Copy handler: failed to read clipboard content after 150ms delay");
                             }
                         });
                     }
@@ -172,7 +175,9 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+            // Increased from 150ms to 300ms to reduce clipboard access contention on Windows.
+            // This still provides reasonable clipboard sync latency while minimizing lock contention.
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
             _ = cancel.changed() => {
                 if *cancel.borrow() {
                     log::info!("Clipboard sync stopped");
@@ -182,6 +187,7 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::
         }
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
+            log::debug!("Polling loop: clipboard changed, broadcasting to peers");
             // Broadcast to all connected peers regardless of focus state.
             // This ensures that whichever machine you're currently controlling always
             // has your latest clipboard content available for pasting.

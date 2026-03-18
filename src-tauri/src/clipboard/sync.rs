@@ -83,21 +83,46 @@ pub fn apply_remote_clipboard(content: ClipboardContent) {
     REMOTE_SET.store(true, Ordering::SeqCst);
 
     let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut success = false;
     if let Ok(mut clipboard) = Clipboard::new() {
         let ok = match &content {
-            ClipboardContent::Text(text) => clipboard.set_text(text).is_ok(),
-            ClipboardContent::Image { width, height, rgba } => clipboard
-                .set_image(ImageData {
+            ClipboardContent::Text(text) => {
+                match clipboard.set_text(text) {
+                    Ok(_) => {
+                        log::debug!("Applied remote clipboard: text ({} chars)", text.len());
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to set remote clipboard text: {}", e);
+                        false
+                    }
+                }
+            }
+            ClipboardContent::Image { width, height, rgba } => {
+                match clipboard.set_image(ImageData {
                     width: *width,
                     height: *height,
                     bytes: Cow::Borrowed(rgba),
-                })
-                .is_ok(),
+                }) {
+                    Ok(_) => {
+                        log::debug!("Applied remote clipboard: image {}x{}", width, height);
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to set remote clipboard image: {}", e);
+                        false
+                    }
+                }
+            }
         };
-        if !ok {
-            // If set failed, clear the flag to avoid suppressing next poll
-            REMOTE_SET.store(false, Ordering::SeqCst);
-        }
+        success = ok;
+    } else {
+        log::warn!("Failed to open clipboard to apply remote update");
+    }
+
+    // Clear flag if we couldn't apply the update, to prevent suppressing next local change
+    if !success {
+        REMOTE_SET.store(false, Ordering::SeqCst);
     }
 }
 

@@ -17,7 +17,8 @@
       "Bash(cd \"D:\\\\MK Share\\\\shareflow\" && npm run tauri build 2>&1)",
       "Bash(grep -rn \"unwrap\\\\|expect\\\\|panic\\\\!\" \"D:\\\\MK Share\\\\shareflow/src-tauri/src\" --include=\"*.rs\" 2>/dev/null | head -50)",
       "Bash(npm run:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }
