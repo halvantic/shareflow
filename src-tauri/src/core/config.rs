@@ -129,7 +129,8 @@ impl AppConfig {
         }
     }
 
-    /// Save config to disk.
+    /// Save config to disk atomically (write to temp file then rename).
+    /// This prevents config corruption if the process crashes mid-write.
     pub fn save(&self) {
         let path = config_path();
         if let Some(parent) = path.parent() {
@@ -138,13 +139,22 @@ impl AppConfig {
                 return;
             }
         }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    log::error!("Failed to write config file: {}", e);
-                }
+        let json = match serde_json::to_string_pretty(self) {
+            Ok(j) => j,
+            Err(e) => {
+                log::error!("Failed to serialize config: {}", e);
+                return;
             }
-            Err(e) => log::error!("Failed to serialize config: {}", e),
+        };
+        // Write to a temp file alongside the target, then rename atomically.
+        let tmp_path = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp_path, &json) {
+            log::error!("Failed to write temp config file: {}", e);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+            log::error!("Failed to rename config file: {}", e);
+            let _ = std::fs::remove_file(&tmp_path);
         }
     }
 }

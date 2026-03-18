@@ -337,6 +337,8 @@ impl Engine {
     /// Remove a disconnected peer.
     pub async fn remove_peer(&self, peer_id: &str) {
         self.peers.lock().await.remove(peer_id);
+        // Cancel any in-progress file transfers so partial files don't linger on disk.
+        self.file_receiver.cancel_all();
         // If we were focused on this peer, switch back to local
         let focus = self.focus.lock().await;
         if matches!(&*focus, FocusState::Remote(id) if id == peer_id) {

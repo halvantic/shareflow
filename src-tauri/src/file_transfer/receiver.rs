@@ -31,11 +31,17 @@ impl FileReceiver {
         let dir = receive_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {}", e))?;
 
-        // Sanitize: strip any path components to prevent directory traversal.
+        // Sanitize: strip any path components to prevent directory traversal,
+        // and remove null bytes and other control characters that could cause OS issues.
         let safe_name = std::path::Path::new(file_name)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "download".to_string());
+        // Strip null bytes and control characters (Windows rejects them, others may misbehave).
+        let safe_name: String = safe_name
+            .chars()
+            .filter(|c| *c != '\0' && !c.is_control())
+            .collect();
         let safe_name = if safe_name.is_empty() || safe_name == "." || safe_name == ".." {
             "download".to_string()
         } else {
@@ -125,12 +131,23 @@ impl FileReceiver {
         Ok((incoming.received, incoming.file_size, incoming.file_name.clone()))
     }
 
-    /// Finalize a completed transfer.
+    /// Finalize a completed transfer. Returns error if not all bytes were received.
     pub fn finish(&self, transfer_id: &str) -> Result<(String, PathBuf, u64), String> {
         let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
         let incoming = transfers
             .remove(transfer_id)
             .ok_or_else(|| format!("Unknown transfer: {}", transfer_id))?;
+
+        // Validate that we actually received all the data we expected.
+        if incoming.received < incoming.file_size {
+            // Partial file on disk — remove it to avoid leaving junk files.
+            drop(incoming.writer);
+            let _ = std::fs::remove_file(&incoming.path);
+            return Err(format!(
+                "Transfer {} incomplete: received {} of {} bytes",
+                transfer_id, incoming.received, incoming.file_size
+            ));
+        }
 
         // Flush is handled by drop, but let's be explicit
         drop(incoming.writer);
@@ -152,6 +169,21 @@ impl FileReceiver {
             drop(incoming.writer);
             let _ = std::fs::remove_file(&incoming.path);
             log::info!("File transfer cancelled: {}", transfer_id);
+        }
+    }
+
+    /// Cancel all in-progress transfers (e.g. when a peer disconnects mid-transfer).
+    /// Cleans up partial files on disk to avoid leaving junk.
+    pub fn cancel_all(&self) {
+        let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
+        let count = transfers.len();
+        for (id, incoming) in transfers.drain() {
+            drop(incoming.writer);
+            let _ = std::fs::remove_file(&incoming.path);
+            log::info!("File transfer {} abandoned on peer disconnect", id);
+        }
+        if count > 0 {
+            log::warn!("Cancelled {} abandoned file transfer(s) due to peer disconnect", count);
         }
     }
 }
