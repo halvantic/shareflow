@@ -296,6 +296,7 @@ impl Engine {
         let id = peer.id.clone();
         let name = peer.name.clone();
         self.peers.lock().await.insert(id.clone(), peer);
+        crate::input::notify_peers_connected(true);
         log::info!("Peer added: {} ({})", name, id);
         let _ = self
             .ui_events
@@ -337,7 +338,12 @@ impl Engine {
 
     /// Remove a disconnected peer.
     pub async fn remove_peer(&self, peer_id: &str) {
-        self.peers.lock().await.remove(peer_id);
+        let remaining = {
+            let mut peers = self.peers.lock().await;
+            peers.remove(peer_id);
+            peers.len()
+        };
+        crate::input::notify_peers_connected(remaining > 0);
         // Cancel any in-progress file transfers so partial files don't linger on disk.
         self.file_receiver.cancel_all();
         // If we were focused on this peer, switch back to local

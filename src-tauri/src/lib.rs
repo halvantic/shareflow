@@ -226,6 +226,23 @@ async fn connect_to_peer_cmd(
                                 cfg.clipboard_sync_enabled = clipboard_sync_enabled;
                             }
                         }
+                        crate::core::protocol::Message::AutoNeighbor { peer_id, edge, remove } => {
+                            let screen_edge = match edge.as_str() {
+                                "left" => crate::core::config::ScreenEdge::Left,
+                                "right" => crate::core::config::ScreenEdge::Right,
+                                "top" => crate::core::config::ScreenEdge::Top,
+                                "bottom" => crate::core::config::ScreenEdge::Bottom,
+                                _ => { log::warn!("AutoNeighbor: invalid edge '{}'", edge); continue; }
+                            };
+                            let mut cfg = engine.config.lock().await;
+                            if remove {
+                                cfg.neighbors.retain(|n| !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id.is_none()));
+                            } else {
+                                cfg.neighbors.retain(|n| !(n.edge == screen_edge && n.screen_id.is_none()));
+                                cfg.neighbors.push(crate::core::config::Neighbor { peer_id, edge: screen_edge, screen_id: None });
+                            }
+                            cfg.save();
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -330,6 +347,13 @@ async fn set_neighbor(
         _ => return Err(format!("Invalid edge: {}", edge)),
     };
 
+    let reciprocal_edge = match screen_edge {
+        crate::core::config::ScreenEdge::Left => "right",
+        crate::core::config::ScreenEdge::Right => "left",
+        crate::core::config::ScreenEdge::Top => "bottom",
+        crate::core::config::ScreenEdge::Bottom => "top",
+    };
+
     let mut config = state.engine.config.lock().await;
 
     // Toggle: if the exact same mapping exists, remove it (deselect)
@@ -347,12 +371,23 @@ async fn set_neighbor(
             .neighbors
             .retain(|n| !(n.edge == screen_edge && n.screen_id == screen_id));
         config.neighbors.push(crate::core::config::Neighbor {
-            peer_id,
+            peer_id: peer_id.clone(),
             edge: screen_edge,
             screen_id,
         });
     }
     config.save();
+    let our_peer_id = config.peer_id.clone();
+    drop(config);
+
+    // Notify the peer so it sets the reciprocal edge pointing back at us.
+    let auto = crate::core::protocol::Message::AutoNeighbor {
+        peer_id: our_peer_id,
+        edge: reciprocal_edge.to_string(),
+        remove: already_set,
+    };
+    let _ = state.engine.send_to_peer(&peer_id, auto).await;
+
     Ok(())
 }
 
@@ -438,7 +473,8 @@ async fn update_settings(
     config.auto_connect = auto_connect;
     config.camera_sharing_enabled = camera_sharing_enabled;
     config.audio_sharing_enabled = audio_sharing_enabled;
-    config.is_primary_km_device = is_primary_km_device;
+    // Agents are always non-primary — ignore any value passed in.
+    config.is_primary_km_device = if config.agent_mode { false } else { is_primary_km_device };
     config.clipboard_sync_enabled = clipboard_sync_enabled;
     if !machine_name.is_empty() {
         config.machine_name = machine_name;
@@ -477,6 +513,11 @@ async fn complete_setup(
     config.agent_mode = agent_mode;
     config.host_address = host_address;
     config.is_first_run = false;
+    if agent_mode {
+        // Agents are controlled, not controllers — they must never act as a
+        // primary K+M device regardless of what was previously configured.
+        config.is_primary_km_device = false;
+    }
     config.save();
     Ok(())
 }
@@ -878,6 +919,23 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                             if cfg.agent_mode {
                                 cfg.clipboard_sync_enabled = clipboard_sync_enabled;
                             }
+                        }
+                        crate::core::protocol::Message::AutoNeighbor { peer_id, edge, remove } => {
+                            let screen_edge = match edge.as_str() {
+                                "left" => crate::core::config::ScreenEdge::Left,
+                                "right" => crate::core::config::ScreenEdge::Right,
+                                "top" => crate::core::config::ScreenEdge::Top,
+                                "bottom" => crate::core::config::ScreenEdge::Bottom,
+                                _ => { log::warn!("AutoNeighbor: invalid edge '{}'", edge); continue; }
+                            };
+                            let mut cfg = engine2.config.lock().await;
+                            if remove {
+                                cfg.neighbors.retain(|n| !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id.is_none()));
+                            } else {
+                                cfg.neighbors.retain(|n| !(n.edge == screen_edge && n.screen_id.is_none()));
+                                cfg.neighbors.push(crate::core::config::Neighbor { peer_id, edge: screen_edge, screen_id: None });
+                            }
+                            cfg.save();
                         }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn

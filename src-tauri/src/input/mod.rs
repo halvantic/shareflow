@@ -157,6 +157,18 @@ pub fn reprime_keyboard_for_focus() {
     }
 }
 
+/// Notify the input capture layer whether any peers are currently connected.
+/// On macOS this suppresses forwarding of non-suppressed mouse-move events
+/// to the async runtime when no peers are connected, eliminating idle CPU waste.
+pub fn notify_peers_connected(has_peers: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_peers_connected(has_peers);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = has_peers;
+}
+
 /// Release any modifier keys (Shift, Ctrl, Alt, Win/Cmd) that are physically
 /// held on the local machine before engaging input suppression.  Prevents stuck
 /// modifiers on the local OS when the key-up arrives after SUPPRESS=true and

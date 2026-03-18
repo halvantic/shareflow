@@ -314,6 +314,23 @@ async fn handle_peer_session(
             Message::ScreenUpdate { screens } => {
                 engine.update_peer_screens(&remote_peer_id, screens).await;
             }
+            Message::AutoNeighbor { peer_id, edge, remove } => {
+                let screen_edge = match edge.as_str() {
+                    "left" => crate::core::config::ScreenEdge::Left,
+                    "right" => crate::core::config::ScreenEdge::Right,
+                    "top" => crate::core::config::ScreenEdge::Top,
+                    "bottom" => crate::core::config::ScreenEdge::Bottom,
+                    _ => { log::warn!("AutoNeighbor: invalid edge '{}'", edge); continue; }
+                };
+                let mut cfg = engine.config.lock().await;
+                if remove {
+                    cfg.neighbors.retain(|n| !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id.is_none()));
+                } else {
+                    cfg.neighbors.retain(|n| !(n.edge == screen_edge && n.screen_id.is_none()));
+                    cfg.neighbors.push(crate::core::config::Neighbor { peer_id, edge: screen_edge, screen_id: None });
+                }
+                cfg.save();
+            }
             Message::Ping => {
                 let _ = conn.outgoing.send(Message::Pong).await;
             }

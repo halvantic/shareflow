@@ -89,6 +89,17 @@ pub enum Message {
         primary_km_peer_id: Option<PeerId>,
     },
 
+    /// Host → peer: automatically set a reciprocal neighbor edge.
+    /// Sent whenever the host calls set_neighbor so both sides stay in sync.
+    AutoNeighbor {
+        /// The peer_id the recipient should point at (the sender's peer_id).
+        peer_id: String,
+        /// Edge on the recipient's side ("Left", "Right", "Top", "Bottom").
+        edge: String,
+        /// True = remove the mapping, false = add/replace it.
+        remove: bool,
+    },
+
     /// Ping/pong for keepalive.
     Ping,
     Pong,

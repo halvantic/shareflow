@@ -224,7 +224,7 @@ function App() {
       })
       .catch(() => setLocalIp("unknown"));
 
-    addLog("Press Scroll Lock to toggle focus between PCs", "info");
+    addLog("Move mouse to a configured screen edge to switch focus between PCs", "info");
 
     const interval = setInterval(() => {
       invoke<PeerInfo[]>("get_peers").then(setPeers);
@@ -834,14 +834,16 @@ function App() {
               ? `${peers.length} peer(s) connected`
               : "No peers connected"}
           </div>
-          <button
-            className="quit-btn"
-            onClick={() => setShowSettings((v) => !v)}
-            title="Settings"
-            style={{ marginRight: 4 }}
-          >
-            {showSettings ? "Close Settings" : "Settings"}
-          </button>
+          {!config?.agent_mode && (
+            <button
+              className="quit-btn"
+              onClick={() => setShowSettings((v) => !v)}
+              title="Settings"
+              style={{ marginRight: 4 }}
+            >
+              {showSettings ? "Close Settings" : "Settings"}
+            </button>
+          )}
           <button
             className="quit-btn"
             onClick={() => invoke("quit_app")}
@@ -975,13 +977,13 @@ function App() {
           {/* Focus Banner */}
           {isRemote && (
             <div className="focus-banner">
-              Controlling remote PC — press Scroll Lock or click "Return
+              Controlling remote PC — click "Return
               Focus" to switch back
             </div>
           )}
 
-          {/* Settings Panel */}
-          {showSettings && (
+          {/* Settings Panel — hidden in agent mode */}
+          {showSettings && !config?.agent_mode && (
             <div className="section settings-panel">
               <h2>Settings</h2>
 
@@ -1044,6 +1046,28 @@ function App() {
                   Automatically connect when a trusted host is discovered on the network
                 </span>
               </div>
+
+              {/* Primary Keyboard & Mouse */}
+              {!config?.agent_mode && (
+                <div className="settings-group">
+                  <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={settingsIsPrimaryKm}
+                      onChange={(e) => setSettingsIsPrimaryKm(e.target.checked)}
+                    />
+                    Primary Keyboard &amp; Mouse Device
+                  </label>
+                  <span className="settings-hint">
+                    Enable on the machine whose keyboard and mouse controls others. Disable on all secondary machines.
+                  </span>
+                  {!settingsIsPrimaryKm && (
+                    <span className="settings-hint" style={{ color: "#f39c12" }}>
+                      This machine will not be able to control other devices.
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Sharing features */}
               <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, color: "#e94560", fontWeight: 600 }}>
@@ -1292,8 +1316,8 @@ function App() {
             </div>
           )}
 
-          {/* Screen Layout */}
-          <div className="section">
+          {/* Screen Layout — hidden in agent mode */}
+          {!config?.agent_mode && <div className="section">
             <h2>Screen Arrangement</h2>
             <div className="screen-layout">
               {screens.map((s) => (
@@ -1321,33 +1345,6 @@ function App() {
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Primary Keyboard & Mouse Device — hidden in agent mode (host controls this) */}
-          {!config?.agent_mode && <div className="section">
-            <h2>Primary Keyboard & Mouse</h2>
-            <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-              Enable on the machine whose keyboard and mouse controls other
-              devices. Disable on all other machines so only one device can
-              inject input. Each machine sets this independently.
-            </p>
-            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <input
-                type="checkbox"
-                checked={settingsIsPrimaryKm}
-                onChange={(e) => setSettingsIsPrimaryKm(e.target.checked)}
-                style={{ width: 16, height: 16 }}
-              />
-              <span style={{ fontWeight: 500 }}>
-                This machine is the primary keyboard & mouse device
-              </span>
-            </label>
-            {!settingsIsPrimaryKm && (
-              <p style={{ fontSize: 12, color: "#f39c12", marginTop: 8 }}>
-                This machine will not be able to control other devices. Make
-                sure another machine has this enabled.
-              </p>
-            )}
           </div>}
 
           {/* Edge Switching — hidden in agent mode */}

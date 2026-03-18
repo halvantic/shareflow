@@ -39,6 +39,27 @@ static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 static ANCHOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static ANCHOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Whether any peers are currently connected.
+/// When false, non-suppressed mouse moves are dropped in the event tap callback
+/// entirely — there is nothing to forward them to, and the async wakeups were
+/// the primary source of idle CPU usage on macOS.
+static PEERS_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// Timestamp (ms since epoch) of the last non-suppressed mouse-move sent to the
+/// channel. Used to throttle edge-detection events to ~60 Hz when peers are
+/// connected but the cursor is not suppressed, preventing the async runtime
+/// from being woken 200+ times/second by trackpad events.
+static LAST_MOVE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Monotonic epoch for cheap elapsed-ms calculations in the hot event tap path.
+static MONO_EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+
+/// Notify the event tap whether any peers are connected.
+/// Call from engine's add_peer / remove_peer so the hot path can bail out early.
+pub fn set_peers_connected(connected: bool) {
+    PEERS_CONNECTED.store(connected, Ordering::Relaxed);
+}
+
 // CGEvent delta fields
 const KCG_MOUSE_EVENT_DELTA_X: u32 = 4;
 const KCG_MOUSE_EVENT_DELTA_Y: u32 = 5;
@@ -599,7 +620,8 @@ extern "C" fn event_tap_callback(
             | KCG_EVENT_RIGHT_MOUSE_DRAGGED
             | KCG_EVENT_OTHER_MOUSE_DRAGGED => {
                 if suppress {
-                    // Use raw deltas for accurate tracking when cursor is suppressed
+                    // Suppressed = controlling a remote machine.
+                    // Use raw deltas for accurate tracking.
                     let dx = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_X) as i32;
                     let dy = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_DELTA_Y) as i32;
                     if dx != 0 || dy != 0 {
@@ -634,13 +656,25 @@ extern "C" fn event_tap_callback(
                     });
                     return std::ptr::null_mut();
                 }
+                // Not suppressed — cursor moves locally.
+                // Only forward to the async runtime if peers are connected
+                // (for edge-switch detection) and at most 60 Hz.
+                // This is the primary idle-CPU fix: at rest with no peers, the
+                // async runtime is never woken by trackpad/mouse events.
                 let loc = CGEventGetLocation(event);
                 LAST_CURSOR_X.store(loc.x as i32, Ordering::SeqCst);
                 LAST_CURSOR_Y.store(loc.y as i32, Ordering::SeqCst);
-                let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
-                    x: loc.x as i32,
-                    y: loc.y as i32,
-                }));
+                if PEERS_CONNECTED.load(Ordering::Relaxed) {
+                    let now_ms = MONO_EPOCH.elapsed().as_millis() as u64;
+                    let last_ms = LAST_MOVE_MS.load(Ordering::Relaxed);
+                    if now_ms.wrapping_sub(last_ms) >= 16 {
+                        LAST_MOVE_MS.store(now_ms, Ordering::Relaxed);
+                        let _ = sender.send(InputEvent::MouseMove(MouseMoveEvent {
+                            x: loc.x as i32,
+                            y: loc.y as i32,
+                        }));
+                    }
+                }
             }
 
             KCG_EVENT_LEFT_MOUSE_DOWN => {

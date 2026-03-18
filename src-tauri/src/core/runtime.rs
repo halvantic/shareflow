@@ -115,7 +115,9 @@ pub async fn start_input_loop(
         // non-primary device's focus switches to Remote, input suppression
         // activates on that machine and it becomes completely stuck (no way
         // to control anything, no way to get back to Local).
-        let is_primary_km = engine.config.lock().await.is_primary_km_device;
+        let cfg = engine.config.lock().await;
+        let is_primary_km = cfg.is_primary_km_device && !cfg.agent_mode;
+        drop(cfg);
 
         if !is_primary_km {
             // If we somehow ended up in Remote focus (e.g., setting changed mid-session),
