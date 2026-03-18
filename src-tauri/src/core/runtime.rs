@@ -102,17 +102,30 @@ pub async fn start_input_loop(
         }
 
         if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
-            if let Message::Key(ref ke) = msg {
-                crate::diag(format!(
-                    "TX key sc=0x{:X} pressed={} → {}",
-                    ke.scancode,
-                    ke.pressed,
-                    &peer_id[..peer_id.len().min(8)]
-                ));
-            }
-            if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
-                log::warn!("Failed to forward input: {}", e);
-                engine.switch_to_local().await;
+            // Check if input forwarding is allowed based on primary K+M setting
+            let config = engine.config.lock().await;
+            let is_primary_km = config.primary_km_peer_id.as_ref().map_or(
+                true, // If not set, allow all devices (legacy behavior)
+                |primary_id| primary_id == &config.peer_id, // Only allow if this device is primary
+            );
+            drop(config);
+
+            if is_primary_km {
+                if let Message::Key(ref ke) = msg {
+                    crate::diag(format!(
+                        "TX key sc=0x{:X} pressed={} → {}",
+                        ke.scancode,
+                        ke.pressed,
+                        &peer_id[..peer_id.len().min(8)]
+                    ));
+                }
+                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                    log::warn!("Failed to forward input: {}", e);
+                    engine.switch_to_local().await;
+                }
+            } else {
+                // Non-primary device cannot inject input to remote machines
+                log::debug!("Input blocked: only primary K+M device can control remote machines");
             }
         }
     }
@@ -124,7 +137,7 @@ pub async fn start_input_loop(
 pub fn start_event_bridge(
     std_rx: std::sync::mpsc::Receiver<InputEvent>,
     async_tx: mpsc::Sender<InputEvent>,
-) {
+) -> Result<(), String> {
     std::thread::Builder::new()
         .name("event-bridge".into())
         .spawn(move || {
@@ -140,10 +153,8 @@ pub fn start_event_bridge(
             }
             log::info!("Event bridge thread ended");
         })
-        .unwrap_or_else(|e| {
-            log::error!("Failed to spawn event bridge thread: {}", e);
-            panic!("Cannot spawn event bridge thread: {}", e);
-        });
+        .map(|_| ())
+        .map_err(|e| format!("Failed to spawn event bridge thread: {}", e))
 }
 
 /// Start clipboard monitoring loop.

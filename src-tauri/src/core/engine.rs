@@ -92,7 +92,7 @@ impl Engine {
     /// Called when a local input event is captured.
     /// Returns (peer_id, message) if the event should be forwarded.
     pub async fn handle_local_input(&self, event: InputEvent) -> Option<(PeerId, Message)> {
-        let focus = self.focus.lock().await;
+        let mut focus = self.focus.lock().await;
 
         match &*focus {
             FocusState::Local => {
@@ -111,10 +111,16 @@ impl Engine {
                         }
                         drop(last);
 
-                        drop(focus);
+                        // Hold focus lock while switching to prevent race condition
+                        // where another thread could change focus between check and switch.
                         if let Some((ref peer_id, ref msg)) = result {
                             if let Message::SwitchFocus { entry_x, entry_y, .. } = msg {
-                                self.switch_to_remote(peer_id, *entry_x, *entry_y).await;
+                                // Update focus state BEFORE releasing lock
+                                *focus = FocusState::Remote(peer_id.to_string());
+                                drop(focus); // Now safe to drop
+
+                                // Perform the switch operations with focus already updated
+                                self.switch_to_remote_unlocked(peer_id, *entry_x, *entry_y).await;
                             }
                         }
                     }
@@ -203,7 +209,17 @@ impl Engine {
 
     /// Switch focus to a remote peer — starts suppressing local input.
     /// `entry_x`/`entry_y` is the cursor entry point on the remote screen.
+    /// This acquires the focus lock. For edge-detected switches, use switch_to_remote_unlocked.
     pub async fn switch_to_remote(&self, peer_id: &str, entry_x: i32, entry_y: i32) {
+        let mut focus = self.focus.lock().await;
+        *focus = FocusState::Remote(peer_id.to_string());
+        drop(focus);
+        self.switch_to_remote_unlocked(peer_id, entry_x, entry_y).await;
+    }
+
+    /// Internal: Perform focus switch operations without acquiring focus lock.
+    /// Assumes focus has already been updated by the caller.
+    async fn switch_to_remote_unlocked(&self, peer_id: &str, entry_x: i32, entry_y: i32) {
         // Record switch time for cooldown.
         *self.last_switch_time.lock().await = Some(std::time::Instant::now());
 
@@ -220,33 +236,12 @@ impl Engine {
         };
         drop(peers);
 
-        // Set focus and enable suppression BEFORE warping the cursor.
-        // On Windows, SetCursorPos (called inside init_remote_mouse) fires
-        // WM_MOUSEMOVE in the hook thread synchronously. If SUPPRESS is not
-        // yet true, that warp event passes through as a real mouse move AND
-        // any keystrokes that arrive in the brief window (hook thread vs async
-        // runtime scheduling) are not suppressed — causing the Start Menu to
-        // open when Win key is pressed right at the edge transition. Setting
-        // SUPPRESS first closes this race window.
-        //
-        // The warp center and virtual position are already zeroed/defaulted to
-        // safe values; the hook's delta path will produce dx=0,dy=0 for the
-        // warp-generated move since it was fired AFTER WARP_CENTER was set in
-        // init_remote_mouse. On the very first call, WARP_CENTER=0, so dx may
-        // be non-zero, but that produces only a single small positional jump on
-        // the remote screen — far less disruptive than allowing keystrokes to
-        // leak through the unsealed suppress window.
-        //
         // Release any locally-held modifier keys on Windows before sealing the
         // suppress gate. This prevents the up-event for a modifier that was
         // physically pressed (e.g. Shift) from reaching the remote machine as
         // an orphaned key-up, which would leave the remote in a wrong modifier
         // state.
         crate::input::flush_held_keys();
-
-        let mut focus = self.focus.lock().await;
-        *focus = FocusState::Remote(peer_id.to_string());
-        drop(focus);
 
         crate::input::set_input_suppression(true);
 

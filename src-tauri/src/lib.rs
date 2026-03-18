@@ -1043,16 +1043,22 @@ pub fn run() {
             let (_capture, event_rx) = input::create_capture_with_channel();
             if let Some(std_rx) = event_rx {
                 let (async_tx, async_rx) = mpsc::channel(4096);
-                core::runtime::start_event_bridge(std_rx, async_tx);
-
-                tauri::async_runtime::spawn(async move {
-                    core::runtime::start_input_loop(
-                        engine_input,
-                        async_rx,
-                    )
-                    .await;
-                });
-                diag("Input capture pipeline fully initialized".into());
+                match core::runtime::start_event_bridge(std_rx, async_tx) {
+                    Ok(()) => {
+                        tauri::async_runtime::spawn(async move {
+                            core::runtime::start_input_loop(
+                                engine_input,
+                                async_rx,
+                            )
+                            .await;
+                        });
+                        diag("Input capture pipeline fully initialized".into());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to start event bridge: {}", e);
+                        diag(format!("WARNING: Input pipeline initialization failed: {}", e));
+                    }
+                }
             } else {
                 log::error!("Failed to create input capture — no event receiver");
             }

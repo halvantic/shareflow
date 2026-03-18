@@ -64,6 +64,12 @@ pub struct AppConfig {
 
     /// Known/trusted peer certificates (fingerprints).
     pub trusted_peers: Vec<TrustedPeer>,
+
+    /// Peer ID of the primary keyboard and mouse device.
+    /// Only this device can inject input to remote machines.
+    /// None means all devices can inject input (legacy behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_km_peer_id: Option<String>,
 }
 
 fn default_discovery_port() -> u16 {
@@ -90,6 +96,7 @@ impl Default for AppConfig {
             trusted_hosts: Vec::new(),
             neighbors: Vec::new(),
             trusted_peers: Vec::new(),
+            primary_km_peer_id: None,
         }
     }
 }
