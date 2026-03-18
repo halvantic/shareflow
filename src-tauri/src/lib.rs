@@ -186,6 +186,7 @@ async fn connect_to_peer_cmd(
                             if target_id == our_peer_id {
                                 let _ = injector.move_mouse(entry_x, entry_y);
                                 engine.switch_to_local().await;
+                                crate::input::reprime_keyboard_for_focus();
                             }
                         }
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
@@ -1050,7 +1051,18 @@ pub fn run() {
             // Keep _capture alive for the lifetime of the app — dropping it
             // detaches the hook thread which is fine but we avoid any edge cases.
             let engine_input = engine.clone();
-            let (_capture, event_rx) = input::create_capture_with_channel();
+            let (mut _capture, event_rx) = input::create_capture_with_channel();
+
+            // On Windows: take the clipboard change receiver from the hook thread.
+            // WM_CLIPBOARDUPDATE signals replace the 300ms polling loop, eliminating
+            // any timing races between clipboard reads and concurrent paste operations.
+            #[cfg(target_os = "windows")]
+            let clip_change_rx = _capture
+                .take_clipboard_change_receiver()
+                .map(core::runtime::start_clipboard_change_bridge);
+            #[cfg(not(target_os = "windows"))]
+            let clip_change_rx: Option<tokio::sync::mpsc::Receiver<()>> = None;
+
             if let Some(std_rx) = event_rx {
                 let (async_tx, async_rx) = mpsc::channel(4096);
                 match core::runtime::start_event_bridge(std_rx, async_tx) {
@@ -1073,11 +1085,11 @@ pub fn run() {
                 log::error!("Failed to create input capture — no event receiver");
             }
 
-            // Start clipboard sync.
+            // Start clipboard sync (event-driven on Windows, polling on other platforms).
             let engine_clip = engine.clone();
             let (_clip_stop_tx, clip_stop_rx) = tokio::sync::watch::channel(false);
             tauri::async_runtime::spawn(async move {
-                core::runtime::start_clipboard_sync(engine_clip, clip_stop_rx).await;
+                core::runtime::start_clipboard_sync(engine_clip, clip_stop_rx, clip_change_rx).await;
             });
 
             // Monitor display configuration changes (resolution, wake from sleep).

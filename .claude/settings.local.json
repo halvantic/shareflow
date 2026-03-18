@@ -18,7 +18,13 @@
       "Bash(grep -rn \"unwrap\\\\|expect\\\\|panic\\\\!\" \"D:\\\\MK Share\\\\shareflow/src-tauri/src\" --include=\"*.rs\" 2>/dev/null | head -50)",
       "Bash(npm run:*)",
       "Bash(cargo check:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(find . -path */windows-0.58* -name *.rs)",
+      "Bash(find C:/Users/joshu/.cargo/registry -name *.rs -path *windows-0.58*)",
+      "Bash(find C:/Users/joshu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f -name *.rs -path *windows-0.58*)"
     ]
   }
 }

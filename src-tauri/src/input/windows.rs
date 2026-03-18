@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN,
@@ -12,12 +14,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
-    SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CallNextHookEx, CreateWindowExW, DestroyWindow, DispatchMessageW, GetAncestor,
+    GetCursorPos, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
+    SetForegroundWindow, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    WindowFromPoint, HMENU, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
+    WINDOW_EX_STYLE, WINDOW_STYLE,
+    GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_CLIPBOARDUPDATE, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
+    WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::{InputCapture, InputEvent, InputInjector};
@@ -31,6 +37,9 @@ static HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SUPPRESS: AtomicBool = AtomicBool::new(false);
 /// Channel sender for forwarding events from hooks to the async runtime.
 static EVENT_SENDER: OnceLock<std_mpsc::Sender<InputEvent>> = OnceLock::new();
+/// Channel sender for notifying the async runtime of clipboard changes.
+/// Signalled from the hook thread when WM_CLIPBOARDUPDATE is received.
+static CLIPBOARD_CHANGE_SENDER: OnceLock<std_mpsc::Sender<()>> = OnceLock::new();
 /// Thread ID of the hook thread, needed to post WM_QUIT to stop it.
 static HOOK_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -60,6 +69,9 @@ static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 pub struct WindowsInputCapture {
     thread_handle: Option<std::thread::JoinHandle<()>>,
     event_receiver: Option<std_mpsc::Receiver<InputEvent>>,
+    /// Receives a `()` signal each time the local clipboard changes.
+    /// Replace the polling loop with this for zero-overhead event-driven sync.
+    clipboard_change_receiver: Option<std_mpsc::Receiver<()>>,
 }
 
 impl WindowsInputCapture {
@@ -67,6 +79,7 @@ impl WindowsInputCapture {
         Self {
             thread_handle: None,
             event_receiver: None,
+            clipboard_change_receiver: None,
         }
     }
 }
@@ -84,6 +97,13 @@ impl InputCapture for WindowsInputCapture {
         let (tx, rx) = std_mpsc::channel();
         let _ = EVENT_SENDER.set(tx);
         self.event_receiver = Some(rx);
+
+        // Create clipboard change notification channel.
+        // The hook thread signals this when WM_CLIPBOARDUPDATE is received,
+        // replacing the need for a 300ms polling loop.
+        let (clip_tx, clip_rx) = std_mpsc::channel::<()>();
+        let _ = CLIPBOARD_CHANGE_SENDER.set(clip_tx);
+        self.clipboard_change_receiver = Some(clip_rx);
 
         HOOK_ACTIVE.store(true, Ordering::SeqCst);
 
@@ -113,16 +133,61 @@ impl InputCapture for WindowsInputCapture {
 
                 log::info!("Low-level hooks installed on thread {}", tid);
 
+                // Create a message-only window (HWND_MESSAGE parent) for clipboard
+                // change notifications. AddClipboardFormatListener requires an HWND;
+                // WM_CLIPBOARDUPDATE is posted here whenever the clipboard changes.
+                // Using the built-in "STATIC" class avoids RegisterClassEx overhead.
+                // HWND_MESSAGE windows never appear on screen or in Alt-Tab.
+                let class_name: Vec<u16> = "STATIC".encode_utf16()
+                    .chain(std::iter::once(0u16))
+                    .collect();
+                let clip_hwnd = CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    PCWSTR(class_name.as_ptr()),
+                    PCWSTR(std::ptr::null()),
+                    WINDOW_STYLE::default(),
+                    0, 0, 0, 0,
+                    HWND_MESSAGE,          // message-only: no desktop presence
+                    HMENU::default(),      // no menu
+                    HINSTANCE::default(),  // no instance needed for built-in class
+                    None,                  // no creation params
+                ).unwrap_or(HWND::default());
+                let clip_registered = if !clip_hwnd.0.is_null() {
+                    let ok = AddClipboardFormatListener(clip_hwnd).is_ok();
+                    log::info!("Clipboard format listener registered: {}", ok);
+                    ok
+                } else {
+                    log::warn!("Failed to create clipboard listener window — falling back to polling");
+                    false
+                };
+
                 // Message loop — required for low-level hooks.
+                // Also dispatches WM_CLIPBOARDUPDATE to the listener window.
                 let mut msg = MSG::default();
                 loop {
                     let ret = GetMessageW(&mut msg, None, 0, 0);
                     if !ret.as_bool() {
                         break; // WM_QUIT received
                     }
+                    if msg.message == WM_CLIPBOARDUPDATE {
+                        // Clipboard changed — signal the async runtime.
+                        if let Some(tx) = CLIPBOARD_CHANGE_SENDER.get() {
+                            let _ = tx.send(());
+                        }
+                    }
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
 
-                // Cleanup
+                // Cleanup clipboard listener
+                if clip_registered {
+                    let _ = RemoveClipboardFormatListener(clip_hwnd);
+                }
+                if !clip_hwnd.0.is_null() {
+                    let _ = DestroyWindow(clip_hwnd);
+                }
+
+                // Cleanup hooks
                 let _ = UnhookWindowsHookEx(mouse_hook);
                 let _ = UnhookWindowsHookEx(kb_hook);
                 log::info!("Hooks removed");
@@ -166,6 +231,13 @@ impl WindowsInputCapture {
     pub fn take_event_receiver(&mut self) -> Option<std_mpsc::Receiver<InputEvent>> {
         self.event_receiver.take()
     }
+
+    /// Take the clipboard change receiver.
+    /// Yields `()` each time WM_CLIPBOARDUPDATE fires on the hook thread.
+    /// Use this to replace the polling loop with event-driven clipboard sync.
+    pub fn take_clipboard_change_receiver(&mut self) -> Option<std_mpsc::Receiver<()>> {
+        self.clipboard_change_receiver.take()
+    }
 }
 
 /// Enable or disable input suppression.
@@ -180,6 +252,38 @@ pub fn set_suppress(suppress: bool) {
 #[allow(dead_code)]
 pub fn is_suppressing() -> bool {
     SUPPRESS.load(Ordering::SeqCst)
+}
+
+/// Activate the window under the cursor after a focus switch so injected
+/// keyboard events reach the correct application.
+///
+/// On Windows, `SendInput` keyboard events go to the foreground window, not
+/// the window under the cursor. After an edge-triggered focus switch the cursor
+/// has been warped to the entry point, but the foreground window hasn't changed.
+/// This means the first few keystrokes land in whatever window previously had
+/// focus (often the ShareFlow tray window or the last-used app) instead of the
+/// window the user is pointing at.
+///
+/// Because ShareFlow's low-level hook processes every input event, Windows
+/// treats ShareFlow's process as the "last input recipient", which grants it
+/// permission to call `SetForegroundWindow` unconditionally.
+pub fn reprime_keyboard_for_focus() {
+    unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        // Ignore failure: on error pt stays {0,0} and WindowFromPoint returns
+        // HWND(0), which the guard below exits on.
+        let _ = GetCursorPos(&mut pt);
+        let hwnd = WindowFromPoint(pt);
+        if hwnd.0.is_null() {
+            return;
+        }
+        // Walk up to the top-level root window (not an owned/child window).
+        let root = GetAncestor(hwnd, GA_ROOT);
+        if !root.0.is_null() {
+            let _ = SetForegroundWindow(root);
+            crate::diag(format!("reprime_keyboard_for_focus: activated HWND {:p}", root.0));
+        }
+    }
 }
 
 /// Synthesize key-up events for any modifier keys currently held by the user.

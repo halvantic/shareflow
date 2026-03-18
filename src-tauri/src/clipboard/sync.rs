@@ -39,18 +39,32 @@ fn sample_hash(width: usize, height: usize, rgba: &[u8]) -> u64 {
 /// On Windows, do a cheap format check before opening the OLE clipboard.
 /// `IsClipboardFormatAvailable` reads a format table without opening/locking
 /// the clipboard, so it cannot interfere with Explorer or other apps.
-/// Returns false when the clipboard only contains file-drop (CF_HDROP) or
-/// other formats we can't sync — we skip the expensive OLE open entirely.
+/// Returns false when the clipboard contains file-drop (CF_HDROP) or other
+/// formats we can't sync — we skip the expensive OLE open entirely.
+///
+/// Important: CF_HDROP is checked FIRST and causes an early false return even
+/// when text/image formats are also present. Windows Explorer adds both CF_HDROP
+/// and CF_UNICODETEXT (the file path) to the clipboard when copying files. If we
+/// only check for syncable text formats, we would open the OLE clipboard during
+/// a file copy and block concurrent paste operations in Explorer.
 #[cfg(windows)]
 fn clipboard_has_syncable_format() -> bool {
     extern "system" {
         fn IsClipboardFormatAvailable(format: u32) -> i32;
     }
+    const CF_HDROP: u32 = 15;    // file list — must skip entirely
     const CF_TEXT: u32 = 1;
     const CF_UNICODETEXT: u32 = 13;
     const CF_DIB: u32 = 8;       // device-independent bitmap
     const CF_DIBV5: u32 = 17;    // v5 DIB (used by some apps for images)
     unsafe {
+        // If files are in the clipboard, skip entirely — even if text/image
+        // formats are also present (Explorer puts the file path in CF_UNICODETEXT
+        // alongside CF_HDROP). Opening the OLE clipboard during a file copy/paste
+        // operation blocks the user's paste and causes "paste greyed out" issues.
+        if IsClipboardFormatAvailable(CF_HDROP) != 0 {
+            return false;
+        }
         IsClipboardFormatAvailable(CF_TEXT) != 0
             || IsClipboardFormatAvailable(CF_UNICODETEXT) != 0
             || IsClipboardFormatAvailable(CF_DIB) != 0

@@ -138,13 +138,22 @@ pub fn start_display_change_monitor() -> std::sync::mpsc::Receiver<()> {
     macos::start_display_change_monitor()
 }
 
-/// Re-prime the keyboard HID pipeline for focus transitions (macOS only).
-/// Sends a harmless warm-up Shift key event so that the first real key injected
-/// after a SwitchFocus is reliably delivered.
+/// Re-prime the keyboard pipeline for focus transitions.
+///
+/// macOS: sends a harmless warm-up Shift key event so the first real key
+/// injected after a SwitchFocus is reliably delivered.
+///
+/// Windows: activates the window under the cursor so injected keyboard events
+/// reach the correct application rather than whichever window previously had
+/// foreground focus.
 pub fn reprime_keyboard_for_focus() {
     #[cfg(target_os = "macos")]
     {
         macos::reprime_keyboard_for_focus();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::reprime_keyboard_for_focus();
     }
 }
 

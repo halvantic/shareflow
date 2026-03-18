@@ -168,17 +168,65 @@ pub fn start_event_bridge(
         .map_err(|e| format!("Failed to spawn event bridge thread: {}", e))
 }
 
+/// Bridge clipboard change signals from the hook thread (std::sync::mpsc) to
+/// the async runtime (tokio::sync::mpsc). Returns the async receiver end.
+///
+/// On Windows the hook thread sends `()` whenever `WM_CLIPBOARDUPDATE` fires,
+/// replacing the need for a polling loop in `start_clipboard_sync`.
+pub fn start_clipboard_change_bridge(
+    std_rx: std::sync::mpsc::Receiver<()>,
+) -> mpsc::Receiver<()> {
+    let (async_tx, async_rx) = mpsc::channel::<()>(32);
+    std::thread::Builder::new()
+        .name("clipboard-change-bridge".into())
+        .spawn(move || {
+            loop {
+                match std_rx.recv() {
+                    Ok(()) => {
+                        if async_tx.blocking_send(()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            log::info!("Clipboard change bridge thread ended");
+        })
+        .ok();
+    async_rx
+}
+
 /// Start clipboard monitoring loop.
 /// The loop exits when `cancel` is signalled (send `true` to stop).
-pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::watch::Receiver<bool>) {
-    log::info!("Clipboard sync started");
+///
+/// `clip_events`: on Windows, pass the receiver from `start_clipboard_change_bridge`
+/// to use event-driven `WM_CLIPBOARDUPDATE` notifications instead of polling.
+/// Pass `None` on other platforms to use the 300ms polling fallback.
+pub async fn start_clipboard_sync(
+    engine: Arc<Engine>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    mut clip_events: Option<mpsc::Receiver<()>>,
+) {
+    log::info!("Clipboard sync started ({})",
+        if clip_events.is_some() { "event-driven" } else { "polling" });
     let mut last_known = clipboard::sync::get_clipboard_fingerprint();
 
     loop {
         tokio::select! {
-            // Increased from 150ms to 300ms to reduce clipboard access contention on Windows.
-            // This still provides reasonable clipboard sync latency while minimizing lock contention.
-            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+            // Wait for a clipboard change event (Windows) or a 300ms poll timer
+            // (macOS/Linux). WM_CLIPBOARDUPDATE fires AFTER the clipboard owner
+            // has released it, so we can never race with a concurrent paste.
+            _ = async {
+                match &mut clip_events {
+                    Some(rx) => {
+                        let _ = rx.recv().await;
+                        // Drain any extra signals queued during rapid clipboard changes
+                        // (e.g. an app that writes multiple formats in sequence).
+                        while rx.try_recv().is_ok() {}
+                    }
+                    None => tokio::time::sleep(Duration::from_millis(300)).await,
+                }
+            } => {}
             _ = cancel.changed() => {
                 if *cancel.borrow() {
                     log::info!("Clipboard sync stopped");
@@ -197,7 +245,7 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::
         }
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
-            log::debug!("Polling loop: clipboard changed, broadcasting to peers");
+            log::debug!("Clipboard changed, broadcasting to peers");
             // Broadcast to all connected peers regardless of focus state.
             // This ensures that whichever machine you're currently controlling always
             // has your latest clipboard content available for pasting.
