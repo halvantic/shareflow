@@ -226,11 +226,6 @@ function App() {
 
     addLog("Move mouse to a configured screen edge to switch focus between PCs", "info");
 
-    const interval = setInterval(() => {
-      invoke<PeerInfo[]>("get_peers").then(setPeers);
-      invoke<any>("get_focus_state").then(setFocus);
-    }, 1000);
-
     // Expire stale discovered peers every 10s
     const cleanupInterval = setInterval(() => {
       setDiscoveredPeers((prev) => {
@@ -267,6 +262,10 @@ function App() {
             `Peer connected: ${data.name} (${data.id.slice(0, 8)}...)`,
             "success"
           );
+          setPeers((prev) => [
+            ...prev.filter((p) => p.id !== data.id),
+            { id: data.id, name: data.name, screens: data.screens },
+          ]);
           // Remove from discovered list once connected
           setDiscoveredPeers((prev) => {
             const next = new Map(prev);
@@ -277,6 +276,7 @@ function App() {
         case "PeerDisconnected":
           addToast(`Peer disconnected`, "error");
           addLog(`Peer disconnected: ${data.id.slice(0, 8)}...`, "error");
+          setPeers((prev) => prev.filter((p) => p.id !== data.id));
           // Remove any camera feed from this peer
           setRemoteCameras((prev) => {
             const next = new Map(prev);
@@ -364,7 +364,6 @@ function App() {
     });
 
     return () => {
-      clearInterval(interval);
       clearInterval(cleanupInterval);
       unlisten.then((f) => f());
       // Stop camera if active

@@ -589,6 +589,36 @@ async fn send_file_to_peer(
 
 // --- System tray setup ---
 
+/// Update the tray icon menu and tooltip from current engine state.
+async fn update_tray(app: &AppHandle<Wry>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let focus = state.engine.get_focus().await;
+    let peers = state.engine.peers.lock().await;
+    let peer_names: Vec<(String, String)> = peers
+        .values()
+        .map(|p| (p.id.clone(), p.name.clone()))
+        .collect();
+    let tooltip = match &focus {
+        FocusState::Local => format!("ShareFlow - Local | {} peer(s)", peer_names.len()),
+        FocusState::Remote(id) => {
+            let name = peers
+                .get(id)
+                .map(|p| p.name.as_str())
+                .unwrap_or("unknown");
+            format!("ShareFlow - Controlling {}", name)
+        }
+    };
+    drop(peers);
+    if let Some(tray) = app.tray_by_id("main") {
+        if let Ok(menu) = build_tray_menu(app, &peer_names, &focus) {
+            let _ = tray.set_menu(Some(menu));
+        }
+        let _ = tray.set_tooltip(Some(&tooltip));
+    }
+}
+
 /// Build a tray menu dynamically based on current peers and focus state.
 fn build_tray_menu(
     app: &AppHandle<Wry>,
@@ -720,58 +750,6 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
         })
         .build(app)?;
 
-    // Spawn task to update tray menu and tooltip when state changes.
-    let app_handle2 = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut last_tooltip = String::new();
-        let mut last_peer_count: usize = 0;
-        let mut last_focus = FocusState::Local;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if let Some(state) = app_handle2.try_state::<AppState>() {
-                let focus = state.engine.get_focus().await;
-                let peers = state.engine.peers.lock().await;
-                let peer_count = peers.len();
-
-                // Collect peer info for menu
-                let peer_names: Vec<(String, String)> = peers
-                    .values()
-                    .map(|p| (p.id.clone(), p.name.clone()))
-                    .collect();
-
-                let tooltip = match &focus {
-                    FocusState::Local => format!("ShareFlow - Local | {} peer(s)", peer_count),
-                    FocusState::Remote(id) => {
-                        let name = peers
-                            .get(id)
-                            .map(|p| p.name.as_str())
-                            .unwrap_or("unknown");
-                        format!("ShareFlow - Controlling {}", name)
-                    }
-                };
-                drop(peers);
-
-                // Rebuild tray menu if state changed
-                if peer_count != last_peer_count || focus != last_focus {
-                    last_peer_count = peer_count;
-                    last_focus = focus.clone();
-                    if let Some(tray) = app_handle2.tray_by_id("main") {
-                        if let Ok(menu) = build_tray_menu(&app_handle2, &peer_names, &focus) {
-                            let _ = tray.set_menu(Some(menu));
-                        }
-                    }
-                }
-
-                // Update tooltip
-                if tooltip != last_tooltip {
-                    last_tooltip = tooltip.clone();
-                    if let Some(tray) = app_handle2.tray_by_id("main") {
-                        let _ = tray.set_tooltip(Some(&tooltip));
-                    }
-                }
-            }
-        }
-    });
 
     Ok(())
 }
@@ -1129,9 +1107,17 @@ pub fn run() {
                 log::error!("Failed to set up system tray: {}", e);
             }
 
-            // Forward UI events from engine to Tauri frontend.
+            // Forward UI events from engine to Tauri frontend and update tray on state changes.
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = ui_rx.recv().await {
+                    match &event {
+                        UiEvent::FocusChanged { .. }
+                        | UiEvent::PeerConnected { .. }
+                        | UiEvent::PeerDisconnected { .. } => {
+                            update_tray(&app_handle).await;
+                        }
+                        _ => {}
+                    }
                     let _ = app_handle.emit("shareflow-event", &event);
                 }
             });

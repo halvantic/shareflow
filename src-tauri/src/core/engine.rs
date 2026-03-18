@@ -43,7 +43,7 @@ pub struct Engine {
 #[allow(dead_code)]
 pub enum UiEvent {
     FocusChanged { state: FocusState },
-    PeerConnected { id: String, name: String },
+    PeerConnected { id: String, name: String, screens: usize },
     PeerDisconnected { id: String },
     Log { level: String, message: String },
     FileProgress {
@@ -295,6 +295,7 @@ impl Engine {
     pub async fn add_peer(&self, peer: Peer) {
         let id = peer.id.clone();
         let name = peer.name.clone();
+        let screens = peer.screens.len();
         self.peers.lock().await.insert(id.clone(), peer);
         crate::input::notify_peers_connected(true);
         log::info!("Peer added: {} ({})", name, id);
@@ -303,6 +304,7 @@ impl Engine {
             .send(UiEvent::PeerConnected {
                 id: id.clone(),
                 name,
+                screens,
             })
             .await;
     }
