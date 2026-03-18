@@ -104,38 +104,41 @@ pub async fn start_input_loop(
             }
         }
 
-        if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
-            // Check if input forwarding is allowed based on primary K+M setting
+        // Check primary K+M setting BEFORE processing input events.
+        // The check must happen here — not after handle_local_input — because
+        // handle_local_input can switch focus to Remote on an edge hit. If a
+        // non-primary device's focus switches to Remote, input suppression
+        // activates on that machine and it becomes completely stuck (no way
+        // to control anything, no way to get back to Local).
+        let is_primary_km = {
             let config = engine.config.lock().await;
-            let this_peer_id = config.peer_id.clone();
-            let primary_km_peer_id = config.primary_km_peer_id.clone();
-            drop(config);
+            config.primary_km_peer_id.as_ref().map_or(
+                true, // None means legacy mode — all devices allowed
+                |primary_id| primary_id == &config.peer_id,
+            )
+        };
 
-            let is_primary_km = primary_km_peer_id.as_ref().map_or(
-                true, // If not set, allow all devices (legacy behavior)
-                |primary_id| primary_id == &this_peer_id, // Only allow if this device is primary
-            );
+        if !is_primary_km {
+            // If we somehow ended up in Remote focus (e.g., setting changed mid-session),
+            // switch back immediately so input suppression is released.
+            if matches!(engine.get_focus().await, FocusState::Remote(_)) {
+                engine.switch_to_local().await;
+            }
+            continue; // Skip all input forwarding for non-primary K+M devices
+        }
 
-            if is_primary_km {
-                if let Message::Key(ref ke) = msg {
-                    crate::diag(format!(
-                        "TX key sc=0x{:X} pressed={} → {}",
-                        ke.scancode,
-                        ke.pressed,
-                        &peer_id[..peer_id.len().min(8)]
-                    ));
-                }
-                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
-                    log::warn!("Failed to forward input: {}", e);
-                    engine.switch_to_local().await;
-                }
-            } else {
-                // Non-primary device cannot inject input to remote machines
-                log::warn!(
-                    "Input BLOCKED: this device {} is not primary K+M (primary is {:?})",
-                    &this_peer_id[..this_peer_id.len().min(8)],
-                    primary_km_peer_id.as_ref().map(|p| &p[..p.len().min(8)])
-                );
+        if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
+            if let Message::Key(ref ke) = msg {
+                crate::diag(format!(
+                    "TX key sc=0x{:X} pressed={} → {}",
+                    ke.scancode,
+                    ke.pressed,
+                    &peer_id[..peer_id.len().min(8)]
+                ));
+            }
+            if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
+                log::warn!("Failed to forward input: {}", e);
+                engine.switch_to_local().await;
             }
         }
     }

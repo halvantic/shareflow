@@ -273,6 +273,14 @@ function App() {
         case "Log":
           addLog(data.message, data.level);
           break;
+        case "ConfigUpdated":
+          // Primary K+M setting was synced from a peer — update the settings panel.
+          setSettingsPrimaryKmPeerId(data.primary_km_peer_id || "");
+          addLog(
+            `Primary K+M device updated by peer: ${data.primary_km_peer_id ? data.primary_km_peer_id.slice(0, 8) + "..." : "Allow all"}`,
+            "info"
+          );
+          break;
         case "FileProgress":
           setFileTransfers((prev) => {
             const next = new Map(prev);

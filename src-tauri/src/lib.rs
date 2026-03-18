@@ -126,6 +126,19 @@ async fn connect_to_peer_cmd(
             let result_id = peer_id.clone();
             state.engine.add_peer(peer).await;
 
+            // Immediately push our current primary K+M setting to the newly connected peer
+            // so they enforce the correct policy without waiting for the user to re-save.
+            {
+                let config = state.engine.config.lock().await;
+                if config.primary_km_peer_id.is_some() {
+                    let sync_msg = crate::core::protocol::Message::PrimaryKmDeviceSync {
+                        primary_km_peer_id: config.primary_km_peer_id.clone(),
+                    };
+                    drop(config);
+                    let _ = state.engine.send_to_peer(&peer_id, sync_msg).await;
+                }
+            }
+
             let conn_outgoing = conn.outgoing.clone();
             tokio::spawn(async move {
                 while let Some(msg) = msg_rx.recv().await {
@@ -218,17 +231,16 @@ async fn connect_to_peer_cmd(
                         }
                         crate::core::protocol::Message::PrimaryKmDeviceSync { primary_km_peer_id } => {
                             // Sync primary K+M device setting from peer
-                            let msg_text = format!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            log::info!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            let new_val = primary_km_peer_id.clone();
                             let mut config = engine.config.lock().await;
                             config.primary_km_peer_id = primary_km_peer_id;
                             config.save();
-                            log::info!("{}", msg_text);
+                            drop(config);
+                            // Notify frontend so the settings panel reflects the new value immediately.
                             let _ = engine
                                 .ui_events
-                                .send(UiEvent::Log {
-                                    level: "info".to_string(),
-                                    message: "Primary K+M device setting synced from peer".to_string(),
-                                })
+                                .send(UiEvent::ConfigUpdated { primary_km_peer_id: new_val })
                                 .await;
                         }
                         crate::core::protocol::Message::Ping => {
@@ -771,6 +783,18 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
             let result_id = peer_id.clone();
             engine.add_peer(peer).await;
 
+            // Immediately push our current primary K+M setting to the newly connected peer.
+            {
+                let config = engine.config.lock().await;
+                if config.primary_km_peer_id.is_some() {
+                    let sync_msg = crate::core::protocol::Message::PrimaryKmDeviceSync {
+                        primary_km_peer_id: config.primary_km_peer_id.clone(),
+                    };
+                    drop(config);
+                    let _ = engine.send_to_peer(&peer_id, sync_msg).await;
+                }
+            }
+
             let conn_outgoing = conn.outgoing.clone();
             tokio::spawn(async move {
                 while let Some(msg) = msg_rx.recv().await {
@@ -856,17 +880,16 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                         }
                         crate::core::protocol::Message::PrimaryKmDeviceSync { primary_km_peer_id } => {
                             // Sync primary K+M device setting from peer
-                            let msg_text = format!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            log::info!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            let new_val = primary_km_peer_id.clone();
                             let mut config = engine2.config.lock().await;
                             config.primary_km_peer_id = primary_km_peer_id;
                             config.save();
-                            log::info!("{}", msg_text);
+                            drop(config);
+                            // Notify frontend so the settings panel reflects the new value immediately.
                             let _ = engine2
                                 .ui_events
-                                .send(UiEvent::Log {
-                                    level: "info".to_string(),
-                                    message: "Primary K+M device setting synced from peer".to_string(),
-                                })
+                                .send(UiEvent::ConfigUpdated { primary_km_peer_id: new_val })
                                 .await;
                         }
                         crate::core::protocol::Message::Ping => {
