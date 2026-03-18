@@ -419,6 +419,7 @@ async fn update_settings(
     machine_name: String,
     camera_sharing_enabled: bool,
     audio_sharing_enabled: bool,
+    primary_km_peer_id: Option<String>,
 ) -> Result<(), String> {
     let mut config = state.engine.config.lock().await;
     config.port = port;
@@ -426,6 +427,7 @@ async fn update_settings(
     config.auto_connect = auto_connect;
     config.camera_sharing_enabled = camera_sharing_enabled;
     config.audio_sharing_enabled = audio_sharing_enabled;
+    config.primary_km_peer_id = primary_km_peer_id;
     if !machine_name.is_empty() {
         config.machine_name = machine_name;
     }

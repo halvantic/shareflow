@@ -15,7 +15,8 @@
       "Bash(export PATH=\"/c/Users/joshu/.cargo/bin:/c/Users/joshu/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin:$PATH\" && cd \"D:/MK Share/shareflow\" && npx tauri build 2>&1)",
       "Bash(cd \"D:\\\\MK Share\\\\shareflow\\\\src-tauri\" && cargo check 2>&1)",
       "Bash(cd \"D:\\\\MK Share\\\\shareflow\" && npm run tauri build 2>&1)",
-      "Bash(grep -rn \"unwrap\\\\|expect\\\\|panic\\\\!\" \"D:\\\\MK Share\\\\shareflow/src-tauri/src\" --include=\"*.rs\" 2>/dev/null | head -50)"
+      "Bash(grep -rn \"unwrap\\\\|expect\\\\|panic\\\\!\" \"D:\\\\MK Share\\\\shareflow/src-tauri/src\" --include=\"*.rs\" 2>/dev/null | head -50)",
+      "Bash(npm run:*)"
     ]
   }
 }
