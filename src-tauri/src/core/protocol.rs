@@ -92,6 +92,13 @@ pub enum Message {
     /// Ping/pong for keepalive.
     Ping,
     Pong,
+
+    /// Host pushes its active settings to agents on connect and whenever
+    /// settings change.  Agents apply these values in memory without
+    /// persisting them — the host is authoritative at runtime.
+    ConfigSync {
+        clipboard_sync_enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

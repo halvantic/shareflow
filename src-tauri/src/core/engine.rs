@@ -255,6 +255,7 @@ impl Engine {
         // Push our local clipboard to the remote peer immediately so that Ctrl+V
         // on the remote machine uses our clipboard content rather than its own.
         if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
+            crate::clipboard::sync::notify_local_push();
             let peers = self.peers.lock().await;
             if let Some(peer) = peers.get(peer_id) {
                 let _ = peer

@@ -71,6 +71,28 @@ pub struct AppConfig {
     /// Defaults to true so existing installs keep working.
     #[serde(default = "default_true")]
     pub is_primary_km_device: bool,
+
+    /// Enable clipboard synchronisation with connected peers.
+    /// When false, no clipboard data is sent to or received from peers.
+    /// Defaults to true so existing installs keep working.
+    #[serde(default = "default_true")]
+    pub clipboard_sync_enabled: bool,
+
+    /// When true the app runs in agent mode: minimal UI, auto-connects to
+    /// `host_address`, and defers settings to the host via ConfigSync.
+    #[serde(default)]
+    pub agent_mode: bool,
+
+    /// Address of the host to auto-connect to in agent mode (e.g. "192.168.1.5:24800").
+    #[serde(default)]
+    pub host_address: String,
+
+    /// True only on the very first launch (config file did not exist).
+    /// The setup wizard sets this to false once the user completes it.
+    /// Existing installs deserialise this as false (field absent → default),
+    /// so they skip the wizard and keep their current host-mode behaviour.
+    #[serde(default)]
+    pub is_first_run: bool,
 }
 
 fn default_true() -> bool {
@@ -102,6 +124,10 @@ impl Default for AppConfig {
             neighbors: Vec::new(),
             trusted_peers: Vec::new(),
             is_primary_km_device: true,
+            clipboard_sync_enabled: true,
+            agent_mode: false,
+            host_address: String::new(),
+            is_first_run: false, // used as serde fallback for existing configs
         }
     }
 }
@@ -127,7 +153,9 @@ impl AppConfig {
                 config
             }
             Err(_) => {
-                let config = Self::default();
+                // Config file does not exist — genuine first launch.
+                let mut config = Self::default();
+                config.is_first_run = true;
                 config.save();
                 config
             }

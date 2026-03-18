@@ -130,6 +130,19 @@ async fn handle_peer_session(
     };
     engine.add_peer(peer).await;
 
+    // If we are the host (not in agent mode), push our current settings to
+    // the newly connected peer so it immediately honours our configuration.
+    {
+        let cfg = engine.config.lock().await;
+        if !cfg.agent_mode {
+            let sync = Message::ConfigSync {
+                clipboard_sync_enabled: cfg.clipboard_sync_enabled,
+            };
+            drop(cfg);
+            let _ = engine.send_to_peer(&remote_peer_id, sync).await;
+        }
+    }
+
     // Forward outgoing messages from engine to connection.
     let outgoing = conn.outgoing.clone();
     tokio::spawn(async move {
@@ -266,6 +279,15 @@ async fn handle_peer_session(
             }
             Message::ClipboardUpdate { content } => {
                 crate::clipboard::sync::apply_remote_clipboard(content);
+            }
+            Message::ConfigSync { clipboard_sync_enabled } => {
+                // Only agents apply host-pushed settings; hosts ignore this.
+                let mut cfg = engine.config.lock().await;
+                if cfg.agent_mode {
+                    cfg.clipboard_sync_enabled = clipboard_sync_enabled;
+                    // Not saved — host settings are applied in-memory only.
+                    log::debug!("ConfigSync from host: clipboard_sync_enabled={}", clipboard_sync_enabled);
+                }
             }
             Message::CameraFrame { data } => {
                 use base64::engine::Engine as _;

@@ -29,6 +29,10 @@ interface AppConfig {
   camera_sharing_enabled: boolean;
   audio_sharing_enabled: boolean;
   is_primary_km_device: boolean;
+  clipboard_sync_enabled: boolean;
+  agent_mode: boolean;
+  host_address: string;
+  is_first_run: boolean;
   trusted_hosts: { peer_id: string; name: string }[];
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
   trusted_peers: any[];
@@ -95,6 +99,11 @@ function App() {
   const [settingsCameraEnabled, setSettingsCameraEnabled] = useState(false);
   const [settingsAudioEnabled, setSettingsAudioEnabled] = useState(false);
   const [settingsIsPrimaryKm, setSettingsIsPrimaryKm] = useState(true);
+  const [settingsClipboardEnabled, setSettingsClipboardEnabled] = useState(true);
+  // Setup wizard state
+  const [isFirstRun, setIsFirstRun] = useState(false);
+  const [wizardMode, setWizardMode] = useState<"host" | "agent">("host");
+  const [wizardHostAddr, setWizardHostAddr] = useState("");
   // Camera KVM state
   const [cameraActive, setCameraActive] = useState(false);
   const [remoteCameras, setRemoteCameras] = useState<Map<string, string>>(new Map());
@@ -193,6 +202,10 @@ function App() {
       setSettingsCameraEnabled(cfg.camera_sharing_enabled || false);
       setSettingsAudioEnabled(cfg.audio_sharing_enabled || false);
       setSettingsIsPrimaryKm(cfg.is_primary_km_device !== false);
+      setSettingsClipboardEnabled(cfg.clipboard_sync_enabled !== false);
+      if (cfg.is_first_run) {
+        setIsFirstRun(true);
+      }
       addLog(
         `Machine: ${cfg.machine_name} (${cfg.peer_id.slice(0, 8)}...)`,
         "info"
@@ -458,6 +471,7 @@ function App() {
         cameraSharingEnabled: settingsCameraEnabled,
         audioSharingEnabled: settingsAudioEnabled,
         isPrimaryKmDevice: settingsIsPrimaryKm,
+        clipboardSyncEnabled: settingsClipboardEnabled,
       });
       const cfg = await invoke<any>("get_config");
       setConfig(cfg);
@@ -489,6 +503,28 @@ function App() {
       addLog("Removed from trusted hosts", "success");
     } catch (e: any) {
       addLog(`Failed to remove trusted host: ${e}`, "error");
+    }
+  };
+
+  const handleCompleteSetup = async () => {
+    if (wizardMode === "agent" && !wizardHostAddr.trim()) {
+      addToast("Please enter the host address", "error");
+      return;
+    }
+    try {
+      await invoke("complete_setup", {
+        agentMode: wizardMode === "agent",
+        hostAddress: wizardMode === "agent" ? wizardHostAddr.trim() : "",
+      });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      setIsFirstRun(false);
+      if (wizardMode === "agent" && wizardHostAddr.trim()) {
+        addLog(`Agent mode: connecting to ${wizardHostAddr.trim()}...`);
+        handleConnect(wizardHostAddr.trim());
+      }
+    } catch (e: any) {
+      addToast(`Setup failed: ${e}`, "error");
     }
   };
 
@@ -651,6 +687,82 @@ function App() {
         ))}
       </div>
 
+      {/* First-Run Setup Wizard */}
+      {isFirstRun && (
+        <div className="permissions-overlay">
+          <div className="permissions-modal" style={{ maxWidth: 480 }}>
+            <h2 style={{ marginBottom: 6, fontSize: 20 }}>Welcome to ShareFlow</h2>
+            <p style={{ color: "#aaa", marginBottom: 24, fontSize: 13, lineHeight: 1.5 }}>
+              Choose how this machine will be used. You can change this later in Settings.
+            </p>
+
+            <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+              {/* Host card */}
+              <div
+                onClick={() => setWizardMode("host")}
+                style={{
+                  flex: 1,
+                  padding: "16px 14px",
+                  borderRadius: 8,
+                  border: `2px solid ${wizardMode === "host" ? "#e94560" : "#333"}`,
+                  cursor: "pointer",
+                  background: wizardMode === "host" ? "rgba(233,69,96,0.08)" : "#1a1a2e",
+                  transition: "border-color 0.15s",
+                }}
+              >
+                <div style={{ fontSize: 28, marginBottom: 8 }}>🖥️</div>
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Host</div>
+                <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+                  Full app. Owns settings, controls connected agents. Use this on your main machine.
+                </div>
+              </div>
+
+              {/* Agent card */}
+              <div
+                onClick={() => setWizardMode("agent")}
+                style={{
+                  flex: 1,
+                  padding: "16px 14px",
+                  borderRadius: 8,
+                  border: `2px solid ${wizardMode === "agent" ? "#e94560" : "#333"}`,
+                  cursor: "pointer",
+                  background: wizardMode === "agent" ? "rgba(233,69,96,0.08)" : "#1a1a2e",
+                  transition: "border-color 0.15s",
+                }}
+              >
+                <div style={{ fontSize: 28, marginBottom: 8 }}>📡</div>
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Agent</div>
+                <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+                  Minimal mode. Follows host settings automatically. Use this on secondary machines.
+                </div>
+              </div>
+            </div>
+
+            {wizardMode === "agent" && (
+              <div className="settings-group" style={{ marginBottom: 20 }}>
+                <label className="settings-label">Host Address</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 192.168.1.100:24800"
+                  value={wizardHostAddr}
+                  onChange={(e) => setWizardHostAddr(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                  autoFocus
+                />
+                <span className="settings-hint">IP and port of the host machine</span>
+              </div>
+            )}
+
+            <button
+              onClick={handleCompleteSetup}
+              style={{ width: "100%", padding: "10px 0", fontSize: 14 }}
+            >
+              Get Started
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* macOS Permissions Setup Modal */}
       {showPermissionsModal && (
         <div className="permissions-overlay">
@@ -708,7 +820,7 @@ function App() {
 
       {/* Header */}
       <div className="header">
-        <h1>ShareFlow {appVersion && <span style={{ fontSize: 12, fontWeight: 400, color: '#888' }}>v{appVersion}</span>} <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
+        <h1>ShareFlow {appVersion && <span style={{ fontSize: 12, fontWeight: 400, color: '#888' }}>v{appVersion}</span>} {config?.agent_mode && <span style={{ fontSize: 11, fontWeight: 500, color: '#e94560', background: 'rgba(233,69,96,0.15)', padding: '2px 8px', borderRadius: 4 }}>Agent</span>} <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
         <div className="header-right">
           <div className="status">
             <span
@@ -873,6 +985,18 @@ function App() {
             <div className="section settings-panel">
               <h2>Settings</h2>
 
+              {config?.agent_mode && (
+                <div style={{ marginBottom: 16, padding: "10px 14px", background: "rgba(233,69,96,0.08)", border: "1px solid rgba(233,69,96,0.3)", borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#e94560", marginBottom: 4 }}>Agent Mode</div>
+                  <div style={{ fontSize: 12, color: "#aaa" }}>
+                    This machine is running as an agent. Settings like clipboard sync are pushed by the host.
+                  </div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
+                    Host: <span style={{ color: "#ccc" }}>{config.host_address || "not set"}</span>
+                  </div>
+                </div>
+              )}
+
               <div className="settings-group">
                 <label className="settings-label">Machine Name</label>
                 <input
@@ -951,6 +1075,21 @@ function App() {
                 </label>
                 <span className="settings-hint">
                   Allow sharing your microphone audio with connected peers (WebM/Opus streaming)
+                </span>
+
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settingsClipboardEnabled}
+                    onChange={(e) => setSettingsClipboardEnabled(e.target.checked)}
+                  />
+                  Enable Clipboard Sync
+                </label>
+                <span className="settings-hint">
+                  Automatically sync clipboard content between this machine and connected peers. Disable if clipboard sync causes issues with local apps (e.g. screenshot tools).
                 </span>
               </div>
 
@@ -1184,8 +1323,8 @@ function App() {
             </div>
           </div>
 
-          {/* Primary Keyboard & Mouse Device */}
-          <div className="section">
+          {/* Primary Keyboard & Mouse Device — hidden in agent mode (host controls this) */}
+          {!config?.agent_mode && <div className="section">
             <h2>Primary Keyboard & Mouse</h2>
             <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
               Enable on the machine whose keyboard and mouse controls other
@@ -1209,10 +1348,10 @@ function App() {
                 sure another machine has this enabled.
               </p>
             )}
-          </div>
+          </div>}
 
-          {/* Edge Switching */}
-          {peers.length > 0 && (
+          {/* Edge Switching — hidden in agent mode */}
+          {peers.length > 0 && !config?.agent_mode && (
             <div className="section">
               <h2>Edge Switching</h2>
               <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
@@ -1346,6 +1485,13 @@ function App() {
           {/* Connect */}
           <div className="section">
             <h2>Connect to Peer</h2>
+            {config?.agent_mode && config.host_address && peers.length === 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <button onClick={() => handleConnect(config.host_address)}>
+                  Reconnect to Host ({config.host_address})
+                </button>
+              </div>
+            )}
             <div className="connect-form">
               <input
                 type="text"

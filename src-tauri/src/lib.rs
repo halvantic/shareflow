@@ -190,7 +190,9 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
-                            crate::clipboard::sync::apply_remote_clipboard(content);
+                            if engine.config.lock().await.clipboard_sync_enabled {
+                                crate::clipboard::sync::apply_remote_clipboard(content);
+                            }
                         }
                         crate::core::protocol::Message::CameraFrame { data } => {
                             use base64::engine::Engine as _;
@@ -217,9 +219,12 @@ async fn connect_to_peer_cmd(
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine.update_peer_screens(&remote_peer_id, screens).await;
                         }
-                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {
-                            // Legacy message from older versions — safely ignored.
-                            // Primary K+M is now a per-device local setting.
+                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {}
+                        crate::core::protocol::Message::ConfigSync { clipboard_sync_enabled } => {
+                            let mut cfg = engine.config.lock().await;
+                            if cfg.agent_mode {
+                                cfg.clipboard_sync_enabled = clipboard_sync_enabled;
+                            }
                         }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
@@ -425,6 +430,7 @@ async fn update_settings(
     camera_sharing_enabled: bool,
     audio_sharing_enabled: bool,
     is_primary_km_device: bool,
+    clipboard_sync_enabled: bool,
 ) -> Result<(), String> {
     let mut config = state.engine.config.lock().await;
     config.port = port;
@@ -433,9 +439,44 @@ async fn update_settings(
     config.camera_sharing_enabled = camera_sharing_enabled;
     config.audio_sharing_enabled = audio_sharing_enabled;
     config.is_primary_km_device = is_primary_km_device;
+    config.clipboard_sync_enabled = clipboard_sync_enabled;
     if !machine_name.is_empty() {
         config.machine_name = machine_name;
     }
+    config.save();
+
+    // If we are the host, push updated settings to all connected agents.
+    if !config.agent_mode {
+        let sync = crate::core::protocol::Message::ConfigSync {
+            clipboard_sync_enabled: config.clipboard_sync_enabled,
+        };
+        drop(config);
+        let peers = state.engine.peers.lock().await;
+        for peer in peers.values() {
+            let _ = peer.sender.send(sync.clone()).await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns true if this is the first launch and the setup wizard should be shown.
+#[tauri::command]
+async fn get_setup_state(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.engine.config.lock().await.is_first_run)
+}
+
+/// Called by the setup wizard to save the chosen mode and mark first-run complete.
+#[tauri::command]
+async fn complete_setup(
+    state: tauri::State<'_, AppState>,
+    agent_mode: bool,
+    host_address: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.agent_mode = agent_mode;
+    config.host_address = host_address;
+    config.is_first_run = false;
     config.save();
     Ok(())
 }
@@ -802,7 +843,9 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                             }
                         }
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
-                            crate::clipboard::sync::apply_remote_clipboard(content);
+                            if engine2.config.lock().await.clipboard_sync_enabled {
+                                crate::clipboard::sync::apply_remote_clipboard(content);
+                            }
                         }
                         crate::core::protocol::Message::CameraFrame { data } => {
                             use base64::engine::Engine as _;
@@ -829,9 +872,12 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine2.update_peer_screens(&remote_peer_id, screens).await;
                         }
-                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {
-                            // Legacy message from older versions — safely ignored.
-                            // Primary K+M is now a per-device local setting.
+                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {}
+                        crate::core::protocol::Message::ConfigSync { clipboard_sync_enabled } => {
+                            let mut cfg = engine2.config.lock().await;
+                            if cfg.agent_mode {
+                                cfg.clipboard_sync_enabled = clipboard_sync_enabled;
+                            }
                         }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
@@ -984,6 +1030,8 @@ pub fn run() {
             remove_trusted_host,
             check_accessibility_permission,
             open_accessibility_settings,
+            get_setup_state,
+            complete_setup,
         ])
         // Hide to tray when the window is closed on Windows and macOS,
         // instead of quitting. Use Quit from the tray menu to fully exit.
@@ -1091,6 +1139,27 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 core::runtime::start_clipboard_sync(engine_clip, clip_stop_rx, clip_change_rx).await;
             });
+
+            // Agent mode: auto-connect to the configured host on startup.
+            // A short delay lets the server finish binding and the UI load so
+            // that PeerConnected events reach the frontend listener.
+            {
+                let engine_agent = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (is_agent, host_addr) = {
+                        let cfg = engine_agent.config.lock().await;
+                        (cfg.agent_mode, cfg.host_address.clone())
+                    };
+                    if is_agent && !host_addr.is_empty() {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        log::info!("Agent mode: auto-connecting to host at {}", host_addr);
+                        match auto_connect_to_peer(engine_agent, &host_addr).await {
+                            Ok(msg) => log::info!("Agent auto-connect: {}", msg),
+                            Err(e) => log::warn!("Agent auto-connect failed: {}", e),
+                        }
+                    }
+                });
+            }
 
             // Monitor display configuration changes (resolution, wake from sleep).
             // When the display config changes, refresh local_screens and broadcast

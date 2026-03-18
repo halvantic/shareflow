@@ -72,6 +72,7 @@ pub async fn start_input_loop(
                             tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 log::debug!("Copy handler: broadcasting clipboard to peers");
+                                clipboard::sync::notify_local_push();
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
                                     let _ = peer
@@ -235,10 +236,11 @@ pub async fn start_clipboard_sync(
             }
         }
 
-        // Only touch the clipboard if there is at least one connected peer.
-        // When no peers are connected there is nothing to sync — skipping the
-        // clipboard read entirely prevents any interference with local
-        // clipboard usage (e.g. file copy-paste in Windows Explorer).
+        // Skip entirely when clipboard sync is disabled or no peers connected.
+        let clipboard_enabled = engine.config.lock().await.clipboard_sync_enabled;
+        if !clipboard_enabled {
+            continue;
+        }
         let peer_count = engine.peers.lock().await.len();
         if peer_count == 0 {
             continue;
@@ -246,6 +248,10 @@ pub async fn start_clipboard_sync(
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
             log::debug!("Clipboard changed, broadcasting to peers");
+            // Mark that we are pushing a locally-originated clipboard so that any
+            // echo back from the peer (e.g. Snipping Tool screenshot bounced back as
+            // a stripped arboard copy) is ignored for a short protection window.
+            clipboard::sync::notify_local_push();
             // Broadcast to all connected peers regardless of focus state.
             // This ensures that whichever machine you're currently controlling always
             // has your latest clipboard content available for pasting.

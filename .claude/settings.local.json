@@ -24,7 +24,9 @@
       "WebFetch(domain:github.com)",
       "Bash(find . -path */windows-0.58* -name *.rs)",
       "Bash(find C:/Users/joshu/.cargo/registry -name *.rs -path *windows-0.58*)",
-      "Bash(find C:/Users/joshu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f -name *.rs -path *windows-0.58*)"
+      "Bash(find C:/Users/joshu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f -name *.rs -path *windows-0.58*)",
+      "Bash(npx tsc:*)",
+      "Bash(grep '\"\"version\"\"' \"D:/MK Share/shareflow/src-tauri/tauri.conf.json\")"
     ]
   }
 }
