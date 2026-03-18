@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "shareflow"
-version = "1.21.0"
+version = "1.22.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",

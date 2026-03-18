@@ -76,7 +76,12 @@ pub fn get_clipboard_fingerprint() -> Option<ClipboardFingerprint> {
 
 /// Set the local clipboard to the content received from a remote peer.
 /// Marks the content as remote-originated so the sync loop won't re-broadcast it.
+/// The REMOTE_SET flag is set BEFORE modifying the clipboard to prevent a race
+/// where poll_clipboard_change reads the new content before seeing the flag.
 pub fn apply_remote_clipboard(content: ClipboardContent) {
+    // Set flag BEFORE modifying clipboard to prevent race with poll_clipboard_change
+    REMOTE_SET.store(true, Ordering::SeqCst);
+
     let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(mut clipboard) = Clipboard::new() {
         let ok = match &content {
@@ -89,8 +94,9 @@ pub fn apply_remote_clipboard(content: ClipboardContent) {
                 })
                 .is_ok(),
         };
-        if ok {
-            REMOTE_SET.store(true, Ordering::SeqCst);
+        if !ok {
+            // If set failed, clear the flag to avoid suppressing next poll
+            REMOTE_SET.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -111,10 +117,15 @@ pub fn poll_clipboard_change(
     }
 
     // Clipboard changed — update our tracking state.
-    *last_known = fp;
+    *last_known = fp.clone();
 
     // If this change was triggered by apply_remote_clipboard, suppress the broadcast
     // to prevent a loop: A→B→A→B…
+    // We must check the flag atomically with reading the content to prevent races:
+    // If another thread is calling apply_remote_clipboard simultaneously, we might
+    // have read the new clipboard content but then suppress it anyway (correct).
+    // However, if the flag was already cleared by a previous poll, we won't suppress.
+    // This is the intended behavior — each remote update sets the flag once.
     if REMOTE_SET.swap(false, Ordering::SeqCst) {
         return None;
     }

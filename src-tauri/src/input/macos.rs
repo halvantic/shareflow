@@ -2,6 +2,7 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use super::{InputCapture, InputEvent, InputInjector};
@@ -80,10 +81,17 @@ pub fn set_suppress(suppress: bool) {
     SUPPRESS.store(suppress, Ordering::SeqCst);
 }
 
-/// Release all injected modifier keys and reset INJECTED_MOD_FLAGS.
+/// Release all injected modifier keys and reset injected modifier flags.
 /// Posts synthetic key-up events for all modifier keys to clean up HID state.
 fn reset_injected_modifiers() {
-    let flags = INJECTED_MOD_FLAGS.swap(0, Ordering::SeqCst);
+    // Atomically get and clear the flags
+    let flags = {
+        let mut state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let f = state.injected_flags;
+        state.injected_flags = 0;
+        f
+    };
+
     if flags == 0 {
         return;
     }
@@ -519,13 +527,19 @@ fn scancode_to_mac_vk(sc: u16) -> Option<u16> {
 
 // --- Event Tap Callback ---
 
-/// Track previous modifier flags for detecting individual modifier key changes.
-static PREV_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Modifier state protected by mutex to prevent races between event tap callback
+/// and reset_injected_modifiers() in the async runtime.
+struct ModifierState {
+    prev_flags: u64,
+    injected_flags: u64,
+}
 
-/// Cumulative modifier flags for injected modifier keys.
-/// Updated on each modifier inject so that concurrently held modifiers
-/// (e.g. Shift+Ctrl) are correctly represented in the flags field.
-static INJECTED_MOD_FLAGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MODIFIER_STATE: LazyLock<Mutex<ModifierState>> = LazyLock::new(|| {
+    Mutex::new(ModifierState {
+        prev_flags: 0,
+        injected_flags: 0,
+    })
+});
 
 /// Map macOS virtual keycode to (device-independent flag, device-dependent flag).
 /// Returns None for non-modifier keys.
@@ -722,10 +736,18 @@ extern "C" fn event_tap_callback(
                     0x3A | 0x3D => (flags & KCG_EVENT_FLAG_MASK_ALTERNATE) != 0,
                     0x37 | 0x36 => (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0,
                     0x39 => (flags & 0x00010000) != 0, // Caps Lock
-                    _ => flags > PREV_FLAGS.load(Ordering::SeqCst),
+                    _ => {
+                        // Fall back to flag comparison if specific modifier not recognized
+                        let state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                        flags > state.prev_flags
+                    }
                 };
 
-                PREV_FLAGS.store(flags, Ordering::SeqCst);
+                // Update previous flags (use try_lock to avoid blocking event tap)
+                if let Ok(mut state) = MODIFIER_STATE.try_lock() {
+                    state.prev_flags = flags;
+                }
+
                 let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
             }
 
@@ -1114,7 +1136,10 @@ impl InputInjector for MacOSInputInjector {
                 // which can include a stale Control flag. On macOS, Control+Click
                 // is converted to Right-Click by Cocoa, so a stuck Control modifier
                 // causes every left click to behave as a right click.
-                let mod_flags = INJECTED_MOD_FLAGS.load(Ordering::SeqCst);
+                let mod_flags = {
+                    let state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.injected_flags
+                };
                 CGEventSetFlags(event, mod_flags);
                 // Set click count for multi-click detection (double-click, triple-click).
                 // macOS requires this field set explicitly on synthetic events —
@@ -1210,7 +1235,10 @@ impl InputInjector for MacOSInputInjector {
                 CGEventSetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
                 // Apply currently held modifier flags so modified key combos
                 // (e.g. Shift+A) carry the correct flag state.
-                let mod_flags = INJECTED_MOD_FLAGS.load(Ordering::SeqCst);
+                let mod_flags = {
+                    let state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.injected_flags
+                };
                 if mod_flags != 0 {
                     CGEventSetFlags(event, mod_flags);
                 }
@@ -1236,27 +1264,29 @@ impl MacOSInputInjector {
         let (indep_flag, dep_flag) = modifier_flags_for_vk(mac_vk)
             .expect("inject_modifier called for non-modifier vk");
 
-        // Update cumulative flags
-        let flags = if pressed {
-            INJECTED_MOD_FLAGS.fetch_or(indep_flag | dep_flag, Ordering::SeqCst)
-                | indep_flag | dep_flag
-        } else {
-            // Clear the device-dependent flag. Only clear the device-independent
-            // flag if no other key sharing it is still held (e.g. Left Shift
-            // released while Right Shift is still down).
-            let after_dep = INJECTED_MOD_FLAGS.fetch_and(!(dep_flag), Ordering::SeqCst) & !(dep_flag);
-            // Check if any device-dependent bit for the same modifier family remains.
-            let still_held = match indep_flag {
-                KCG_EVENT_FLAG_MASK_SHIFT => after_dep & (NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK) != 0,
-                KCG_EVENT_FLAG_MASK_CONTROL => after_dep & (NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK) != 0,
-                KCG_EVENT_FLAG_MASK_ALTERNATE => after_dep & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK) != 0,
-                KCG_EVENT_FLAG_MASK_COMMAND => after_dep & (NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK) != 0,
-                _ => false,
-            };
-            if !still_held {
-                INJECTED_MOD_FLAGS.fetch_and(!(indep_flag), Ordering::SeqCst);
+        // Update cumulative flags atomically under lock to prevent races
+        let flags = {
+            let mut state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if pressed {
+                state.injected_flags |= indep_flag | dep_flag;
+            } else {
+                // Clear the device-dependent flag. Only clear the device-independent
+                // flag if no other key sharing it is still held (e.g. Left Shift
+                // released while Right Shift is still down).
+                state.injected_flags &= !(dep_flag);
+                // Check if any device-dependent bit for the same modifier family remains.
+                let still_held = match indep_flag {
+                    KCG_EVENT_FLAG_MASK_SHIFT => state.injected_flags & (NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK) != 0,
+                    KCG_EVENT_FLAG_MASK_CONTROL => state.injected_flags & (NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK) != 0,
+                    KCG_EVENT_FLAG_MASK_ALTERNATE => state.injected_flags & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK) != 0,
+                    KCG_EVENT_FLAG_MASK_COMMAND => state.injected_flags & (NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK) != 0,
+                    _ => false,
+                };
+                if !still_held {
+                    state.injected_flags &= !(indep_flag);
+                }
             }
-            INJECTED_MOD_FLAGS.load(Ordering::SeqCst)
+            state.injected_flags
         };
 
         unsafe {

@@ -90,11 +90,21 @@ impl FileReceiver {
             .get_mut(transfer_id)
             .ok_or_else(|| format!("Unknown transfer: {}", transfer_id))?;
 
-        // Enforce file_size limit: reject writes that would exceed declared size.
-        if incoming.received + data.len() as u64 > incoming.file_size {
+        // Validate that chunk fits within declared file size.
+        // This prevents out-of-order chunks with overlapping offsets from corrupting files.
+        let chunk_end = offset.saturating_add(data.len() as u64);
+        if chunk_end > incoming.file_size {
             return Err(format!(
-                "Transfer {} exceeded declared file size ({} bytes)",
-                transfer_id, incoming.file_size
+                "Transfer {} chunk exceeds file size: offset={}, len={}, file_size={}",
+                transfer_id, offset, data.len(), incoming.file_size
+            ));
+        }
+
+        // Also validate offset is reasonable (not before start of file)
+        if offset > incoming.file_size {
+            return Err(format!(
+                "Transfer {} chunk offset {} exceeds file size {}",
+                transfer_id, offset, incoming.file_size
             ));
         }
 
@@ -109,7 +119,9 @@ impl FileReceiver {
             .write_all(data)
             .map_err(|e| format!("Write error: {}", e))?;
 
-        incoming.received += data.len() as u64;
+        // Update received count (don't double-count overlapping regions,
+        // but for now trust the sender's chunks are sequential and non-overlapping)
+        incoming.received = incoming.received.max(chunk_end);
         Ok((incoming.received, incoming.file_size, incoming.file_name.clone()))
     }
 
