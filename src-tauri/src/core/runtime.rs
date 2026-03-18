@@ -104,11 +104,14 @@ pub async fn start_input_loop(
         if let Some((peer_id, msg)) = engine.handle_local_input(event).await {
             // Check if input forwarding is allowed based on primary K+M setting
             let config = engine.config.lock().await;
-            let is_primary_km = config.primary_km_peer_id.as_ref().map_or(
-                true, // If not set, allow all devices (legacy behavior)
-                |primary_id| primary_id == &config.peer_id, // Only allow if this device is primary
-            );
+            let this_peer_id = config.peer_id.clone();
+            let primary_km_peer_id = config.primary_km_peer_id.clone();
             drop(config);
+
+            let is_primary_km = primary_km_peer_id.as_ref().map_or(
+                true, // If not set, allow all devices (legacy behavior)
+                |primary_id| primary_id == &this_peer_id, // Only allow if this device is primary
+            );
 
             if is_primary_km {
                 if let Message::Key(ref ke) = msg {
@@ -125,7 +128,11 @@ pub async fn start_input_loop(
                 }
             } else {
                 // Non-primary device cannot inject input to remote machines
-                log::debug!("Input blocked: only primary K+M device can control remote machines");
+                log::warn!(
+                    "Input BLOCKED: this device {} is not primary K+M (primary is {:?})",
+                    &this_peer_id[..this_peer_id.len().min(8)],
+                    primary_km_peer_id.as_ref().map(|p| &p[..p.len().min(8)])
+                );
             }
         }
     }

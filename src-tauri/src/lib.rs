@@ -216,6 +216,21 @@ async fn connect_to_peer_cmd(
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine.update_peer_screens(&remote_peer_id, screens).await;
                         }
+                        crate::core::protocol::Message::PrimaryKmDeviceSync { primary_km_peer_id } => {
+                            // Sync primary K+M device setting from peer
+                            let msg_text = format!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            let mut config = engine.config.lock().await;
+                            config.primary_km_peer_id = primary_km_peer_id;
+                            config.save();
+                            log::info!("{}", msg_text);
+                            let _ = engine
+                                .ui_events
+                                .send(UiEvent::Log {
+                                    level: "info".to_string(),
+                                    message: "Primary K+M device setting synced from peer".to_string(),
+                                })
+                                .await;
+                        }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn
                                 .outgoing
@@ -427,7 +442,22 @@ async fn update_settings(
     config.auto_connect = auto_connect;
     config.camera_sharing_enabled = camera_sharing_enabled;
     config.audio_sharing_enabled = audio_sharing_enabled;
-    config.primary_km_peer_id = primary_km_peer_id;
+
+    // If primary K+M changed, broadcast to all connected peers
+    if config.primary_km_peer_id != primary_km_peer_id {
+        config.primary_km_peer_id = primary_km_peer_id.clone();
+        let peers = state.engine.peers.lock().await;
+        let sync_msg = crate::core::protocol::Message::PrimaryKmDeviceSync {
+            primary_km_peer_id: primary_km_peer_id.clone(),
+        };
+        for peer in peers.values() {
+            let _ = peer.sender.send(sync_msg.clone()).await;
+        }
+        log::info!("Broadcasted primary K+M device setting to {} peers", peers.len());
+    } else {
+        config.primary_km_peer_id = primary_km_peer_id;
+    }
+
     if !machine_name.is_empty() {
         config.machine_name = machine_name;
     }
@@ -823,6 +853,21 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                         }
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine2.update_peer_screens(&remote_peer_id, screens).await;
+                        }
+                        crate::core::protocol::Message::PrimaryKmDeviceSync { primary_km_peer_id } => {
+                            // Sync primary K+M device setting from peer
+                            let msg_text = format!("Updated primary K+M device setting from peer: {:?}", primary_km_peer_id);
+                            let mut config = engine2.config.lock().await;
+                            config.primary_km_peer_id = primary_km_peer_id;
+                            config.save();
+                            log::info!("{}", msg_text);
+                            let _ = engine2
+                                .ui_events
+                                .send(UiEvent::Log {
+                                    level: "info".to_string(),
+                                    message: "Primary K+M device setting synced from peer".to_string(),
+                                })
+                                .await;
                         }
                         crate::core::protocol::Message::Ping => {
                             let _ = conn

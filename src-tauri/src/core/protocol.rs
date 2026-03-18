@@ -83,6 +83,12 @@ pub enum Message {
         screens: Vec<ScreenInfo>,
     },
 
+    /// Sync primary keyboard & mouse device setting across peers.
+    /// None means "allow all devices". Some(peer_id) means only that device can inject input.
+    PrimaryKmDeviceSync {
+        primary_km_peer_id: Option<PeerId>,
+    },
+
     /// Ping/pong for keepalive.
     Ping,
     Pong,
