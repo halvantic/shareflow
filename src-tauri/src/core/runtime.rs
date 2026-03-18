@@ -60,11 +60,15 @@ pub async fn start_input_loop(
 
                 if is_copy {
                     if let FocusState::Local = focus_at_detection {
-                        // Copying locally: push to all peers after a longer delay so the OS
-                        // has time to update the clipboard. Increased from 50ms to 150ms
-                        // to handle the delay of focus transitions between machines.
+                        // Copying locally: push to all peers after a short delay so the OS
+                        // has time to update the clipboard before we read it.
                         let engine_clone = engine.clone();
                         tokio::spawn(async move {
+                            // Check upfront if any peers are connected — if not, skip
+                            // the clipboard read entirely to avoid any interference.
+                            if engine_clone.peers.lock().await.is_empty() {
+                                return;
+                            }
                             tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 log::debug!("Copy handler: broadcasting clipboard to peers");
@@ -78,7 +82,7 @@ pub async fn start_input_loop(
                                         .await;
                                 }
                             } else {
-                                log::warn!("Copy handler: failed to read clipboard content after 150ms delay");
+                                log::debug!("Copy handler: clipboard has no syncable content (may be files)");
                             }
                         });
                     }
@@ -181,6 +185,15 @@ pub async fn start_clipboard_sync(engine: Arc<Engine>, mut cancel: tokio::sync::
                     break;
                 }
             }
+        }
+
+        // Only touch the clipboard if there is at least one connected peer.
+        // When no peers are connected there is nothing to sync — skipping the
+        // clipboard read entirely prevents any interference with local
+        // clipboard usage (e.g. file copy-paste in Windows Explorer).
+        let peer_count = engine.peers.lock().await.len();
+        if peer_count == 0 {
+            continue;
         }
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {

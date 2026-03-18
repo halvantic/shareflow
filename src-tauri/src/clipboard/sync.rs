@@ -36,8 +36,45 @@ fn sample_hash(width: usize, height: usize, rgba: &[u8]) -> u64 {
     h.finish()
 }
 
+/// On Windows, do a cheap format check before opening the OLE clipboard.
+/// `IsClipboardFormatAvailable` reads a format table without opening/locking
+/// the clipboard, so it cannot interfere with Explorer or other apps.
+/// Returns false when the clipboard only contains file-drop (CF_HDROP) or
+/// other formats we can't sync — we skip the expensive OLE open entirely.
+#[cfg(windows)]
+fn clipboard_has_syncable_format() -> bool {
+    extern "system" {
+        fn IsClipboardFormatAvailable(format: u32) -> i32;
+    }
+    const CF_TEXT: u32 = 1;
+    const CF_UNICODETEXT: u32 = 13;
+    const CF_DIB: u32 = 8;       // device-independent bitmap
+    const CF_DIBV5: u32 = 17;    // v5 DIB (used by some apps for images)
+    unsafe {
+        IsClipboardFormatAvailable(CF_TEXT) != 0
+            || IsClipboardFormatAvailable(CF_UNICODETEXT) != 0
+            || IsClipboardFormatAvailable(CF_DIB) != 0
+            || IsClipboardFormatAvailable(CF_DIBV5) != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn clipboard_has_syncable_format() -> bool {
+    true // macOS/Linux: always attempt; arboard handles format filtering there
+}
+
 /// Get the current clipboard content (text or image).
+/// Returns None if the clipboard is empty, contains unsyncable formats (e.g.
+/// file drops), or cannot be opened. Never clears or modifies the clipboard.
 pub fn get_clipboard_content() -> Option<ClipboardContent> {
+    // Fast path on Windows: if the clipboard doesn't have text or image
+    // formats, skip opening the OLE clipboard entirely. This prevents
+    // ShareFlow from interfering with file copy-paste (CF_HDROP) which
+    // the arboard OLE calls can disrupt even during a read.
+    if !clipboard_has_syncable_format() {
+        return None;
+    }
+
     let _guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut clipboard = Clipboard::new().ok()?;
     // Try text first.
