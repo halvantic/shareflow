@@ -1184,7 +1184,7 @@ function App() {
           </div>
 
           {/* Primary Keyboard & Mouse Device */}
-          {peers.length > 0 && (
+          {(peers.length > 0 || config) && (
             <div className="section">
               <h2>Primary Keyboard & Mouse Device</h2>
               <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
@@ -1210,6 +1210,22 @@ function App() {
                   />
                   <span>Allow all devices (legacy mode)</span>
                 </label>
+                {config && (
+                  <label
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <input
+                      type="radio"
+                      name="primaryKm"
+                      value={config.peer_id}
+                      checked={settingsPrimaryKmPeerId === config.peer_id}
+                      onChange={(e) =>
+                        setSettingsPrimaryKmPeerId(e.target.value)
+                      }
+                    />
+                    <span>{config.machine_name} (this machine)</span>
+                  </label>
+                )}
                 {peers.map((peer) => (
                   <label
                     key={peer.id}
