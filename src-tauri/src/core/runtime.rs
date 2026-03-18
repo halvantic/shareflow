@@ -26,8 +26,19 @@ pub async fn start_input_loop(
     // Track modifier key state for copy/paste shortcut detection.
     let mut ctrl_held = false;
     let mut cmd_held = false;
+    let mut last_focus = engine.get_focus().await;
 
     while let Some(event) = event_rx.recv().await {
+        // Check if focus changed — if so, reset modifiers to prevent stale keys
+        // after device switching (e.g., Ctrl held on Windows, key-up on Mac).
+        let current_focus = engine.get_focus().await;
+        if current_focus != last_focus {
+            ctrl_held = false;
+            cmd_held = false;
+            last_focus = current_focus;
+            log::debug!("Focus changed, reset modifier state");
+        }
+
         // Track modifier keys from keyboard events.
         if let InputEvent::Key(ref ke) = event {
             match ke.scancode {
@@ -44,15 +55,17 @@ pub async fn start_input_loop(
             let is_paste = ke.pressed && ke.scancode == SC_V && modifier;
 
             if is_copy || is_paste {
-                let focus = engine.get_focus().await;
+                // Capture focus state at shortcut detection time
+                let focus_at_detection = engine.get_focus().await;
 
                 if is_copy {
-                    if let FocusState::Local = focus {
-                        // Copying locally: push to all peers after a brief delay so the OS
-                        // has time to update the clipboard before we read it.
+                    if let FocusState::Local = focus_at_detection {
+                        // Copying locally: push to all peers after a longer delay so the OS
+                        // has time to update the clipboard. Increased from 50ms to 150ms
+                        // to handle the delay of focus transitions between machines.
                         let engine_clone = engine.clone();
                         tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
@@ -72,7 +85,7 @@ pub async fn start_input_loop(
                 }
 
                 if is_paste {
-                    if let FocusState::Remote(ref peer_id) = focus {
+                    if let FocusState::Remote(ref peer_id) = focus_at_detection {
                         // Before forwarding Ctrl+V to the remote machine, push our local
                         // clipboard so the remote pastes our content instead of its own.
                         if let Some(content) = clipboard::sync::get_clipboard_content() {
