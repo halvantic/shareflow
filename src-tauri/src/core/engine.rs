@@ -46,8 +46,6 @@ pub enum UiEvent {
     PeerConnected { id: String, name: String },
     PeerDisconnected { id: String },
     Log { level: String, message: String },
-    /// The primary K+M device setting was synced from a peer — frontend should refresh.
-    ConfigUpdated { primary_km_peer_id: Option<String> },
     FileProgress {
         transfer_id: String,
         file_name: String,

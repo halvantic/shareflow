@@ -28,6 +28,7 @@ interface AppConfig {
   auto_connect: boolean;
   camera_sharing_enabled: boolean;
   audio_sharing_enabled: boolean;
+  is_primary_km_device: boolean;
   trusted_hosts: { peer_id: string; name: string }[];
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
   trusted_peers: any[];
@@ -93,7 +94,7 @@ function App() {
   const [settingsMachineName, setSettingsMachineName] = useState("");
   const [settingsCameraEnabled, setSettingsCameraEnabled] = useState(false);
   const [settingsAudioEnabled, setSettingsAudioEnabled] = useState(false);
-  const [settingsPrimaryKmPeerId, setSettingsPrimaryKmPeerId] = useState("");
+  const [settingsIsPrimaryKm, setSettingsIsPrimaryKm] = useState(true);
   // Camera KVM state
   const [cameraActive, setCameraActive] = useState(false);
   const [remoteCameras, setRemoteCameras] = useState<Map<string, string>>(new Map());
@@ -191,7 +192,7 @@ function App() {
       setSettingsMachineName(cfg.machine_name || "");
       setSettingsCameraEnabled(cfg.camera_sharing_enabled || false);
       setSettingsAudioEnabled(cfg.audio_sharing_enabled || false);
-      setSettingsPrimaryKmPeerId(cfg.primary_km_peer_id || "");
+      setSettingsIsPrimaryKm(cfg.is_primary_km_device !== false);
       addLog(
         `Machine: ${cfg.machine_name} (${cfg.peer_id.slice(0, 8)}...)`,
         "info"
@@ -272,14 +273,6 @@ function App() {
           break;
         case "Log":
           addLog(data.message, data.level);
-          break;
-        case "ConfigUpdated":
-          // Primary K+M setting was synced from a peer — update the settings panel.
-          setSettingsPrimaryKmPeerId(data.primary_km_peer_id || "");
-          addLog(
-            `Primary K+M device updated by peer: ${data.primary_km_peer_id ? data.primary_km_peer_id.slice(0, 8) + "..." : "Allow all"}`,
-            "info"
-          );
           break;
         case "FileProgress":
           setFileTransfers((prev) => {
@@ -464,7 +457,7 @@ function App() {
         machineName: settingsMachineName,
         cameraSharingEnabled: settingsCameraEnabled,
         audioSharingEnabled: settingsAudioEnabled,
-        primaryKmPeerId: settingsPrimaryKmPeerId || null,
+        isPrimaryKmDevice: settingsIsPrimaryKm,
       });
       const cfg = await invoke<any>("get_config");
       setConfig(cfg);
@@ -1192,66 +1185,31 @@ function App() {
           </div>
 
           {/* Primary Keyboard & Mouse Device */}
-          {(peers.length > 0 || config) && (
-            <div className="section">
-              <h2>Primary Keyboard & Mouse Device</h2>
-              <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-                Select which device can inject keyboard and mouse input to remote
-                machines. Other devices can control their own machine but cannot
-                control remote machines. Leave unset to allow all devices.
+          <div className="section">
+            <h2>Primary Keyboard & Mouse</h2>
+            <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+              Enable on the machine whose keyboard and mouse controls other
+              devices. Disable on all other machines so only one device can
+              inject input. Each machine sets this independently.
+            </p>
+            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={settingsIsPrimaryKm}
+                onChange={(e) => setSettingsIsPrimaryKm(e.target.checked)}
+                style={{ width: 16, height: 16 }}
+              />
+              <span style={{ fontWeight: 500 }}>
+                This machine is the primary keyboard & mouse device
+              </span>
+            </label>
+            {!settingsIsPrimaryKm && (
+              <p style={{ fontSize: 12, color: "#f39c12", marginTop: 8 }}>
+                This machine will not be able to control other devices. Make
+                sure another machine has this enabled.
               </p>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                  marginBottom: 12,
-                }}
-              >
-                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="radio"
-                    name="primaryKm"
-                    value=""
-                    checked={settingsPrimaryKmPeerId === ""}
-                    onChange={(e) => setSettingsPrimaryKmPeerId(e.target.value)}
-                  />
-                  <span>Allow all devices (legacy mode)</span>
-                </label>
-                {config && (
-                  <label
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <input
-                      type="radio"
-                      name="primaryKm"
-                      value={config.peer_id}
-                      checked={settingsPrimaryKmPeerId === config.peer_id}
-                      onChange={(e) =>
-                        setSettingsPrimaryKmPeerId(e.target.value)
-                      }
-                    />
-                    <span>{config.machine_name} (this machine)</span>
-                  </label>
-                )}
-                {peers.map((peer) => (
-                  <label
-                    key={peer.id}
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <input
-                      type="radio"
-                      name="primaryKm"
-                      value={peer.id}
-                      checked={settingsPrimaryKmPeerId === peer.id}
-                      onChange={(e) => setSettingsPrimaryKmPeerId(e.target.value)}
-                    />
-                    <span>{peer.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Edge Switching */}
           {peers.length > 0 && (
