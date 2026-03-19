@@ -251,9 +251,11 @@ pub fn set_suppress(suppress: bool) {
         // counter so one hide must be paired with exactly one show.
         unsafe {
             if suppress {
-                ShowCursor(false);
+                // Loop until the counter goes negative (cursor actually hidden).
+                while ShowCursor(false) >= 0 {}
             } else {
-                ShowCursor(true);
+                // Loop until the counter reaches 0 (cursor actually visible).
+                while ShowCursor(true) < 0 {}
             }
         }
     }
