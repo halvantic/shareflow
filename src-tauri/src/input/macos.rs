@@ -304,6 +304,7 @@ extern "C" {
 
     fn CGEventCreate(source: *const c_void) -> CGEventRef;
     fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    fn CGEventSetDoubleValueField(event: CGEventRef, field: u32, value: f64);
     fn CGEventSetType(event: CGEventRef, event_type: u32);
     fn CGEventSetFlags(event: CGEventRef, flags: u64);
     fn CGEventPost(tap: u32, event: CGEventRef);
@@ -1075,7 +1076,13 @@ unsafe fn create_event_source() -> *mut c_void {
 
 impl InputInjector for MacOSInputInjector {
     fn move_mouse(&self, x: i32, y: i32) -> Result<(), String> {
-        // Update tracked cursor position for press_mouse_button
+        // Compute delta from previous position before updating.
+        // Both integer and double delta fields must be set on the synthetic
+        // event so apps that read relative deltas (window dragging, Photoshop,
+        // 3D viewports) see correct movement rather than zero.
+        let dx = x - LAST_CURSOR_X.load(Ordering::SeqCst);
+        let dy = y - LAST_CURSOR_Y.load(Ordering::SeqCst);
+
         LAST_CURSOR_X.store(x, Ordering::SeqCst);
         LAST_CURSOR_Y.store(y, Ordering::SeqCst);
         unsafe {
@@ -1107,6 +1114,12 @@ impl InputInjector for MacOSInputInjector {
             );
             if !move_event.is_null() {
                 CGEventSetIntegerValueField(move_event, KCG_EVENT_SOURCE_USER_DATA, SHAREFLOW_EVENT_MARKER);
+                // Set relative delta fields — required for apps that read deltas
+                // instead of absolute position (window drag, creative apps, 3D).
+                CGEventSetIntegerValueField(move_event, KCG_MOUSE_EVENT_DELTA_X, dx as i64);
+                CGEventSetIntegerValueField(move_event, KCG_MOUSE_EVENT_DELTA_Y, dy as i64);
+                CGEventSetDoubleValueField(move_event, KCG_MOUSE_EVENT_DELTA_X, dx as f64);
+                CGEventSetDoubleValueField(move_event, KCG_MOUSE_EVENT_DELTA_Y, dy as f64);
                 CGEventPost(KCG_HID_EVENT_TAP, move_event);
                 CFRelease(move_event);
             }
