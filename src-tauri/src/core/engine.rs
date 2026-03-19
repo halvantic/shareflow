@@ -35,6 +35,9 @@ pub struct Engine {
     pub file_receiver: FileReceiver,
     /// Cooldown: last time a focus switch occurred, to prevent rapid oscillation.
     pub last_switch_time: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Last known local cursor position, used to compute movement direction for
+    /// the edge-switch velocity gate (prevents accidental triggers during drags).
+    pub last_mouse_pos: Arc<Mutex<Option<(i32, i32)>>>,
 }
 
 /// Events pushed to the frontend UI.
@@ -86,6 +89,7 @@ impl Engine {
             ui_events,
             file_receiver: FileReceiver::new(),
             last_switch_time: Arc::new(Mutex::new(None)),
+            last_mouse_pos: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -98,14 +102,24 @@ impl Engine {
             FocusState::Local => {
                 // Check for screen edge transitions
                 if let InputEvent::MouseMove(ref mv) = event {
-                    let result = self.check_edge_switch(mv.x, mv.y).await;
+                    // Compute movement delta for the direction gate.
+                    let (dx, dy) = {
+                        let mut last = self.last_mouse_pos.lock().await;
+                        let delta = match *last {
+                            Some((px, py)) => (mv.x - px, mv.y - py),
+                            None => (0, 0),
+                        };
+                        *last = Some((mv.x, mv.y));
+                        delta
+                    };
+                    let result = self.check_edge_switch(mv.x, mv.y, dx, dy).await;
                     if result.is_some() {
                         // Cooldown: prevent rapid oscillation between machines.
                         // Without this, in-flight messages and edge-detection races
                         // can cause focus to bounce back and forth continuously.
                         let last = self.last_switch_time.lock().await;
                         if let Some(t) = *last {
-                            if t.elapsed() < std::time::Duration::from_millis(500) {
+                            if t.elapsed() < std::time::Duration::from_millis(300) {
                                 return None;
                             }
                         }
@@ -142,11 +156,26 @@ impl Engine {
     }
 
     /// Check if the cursor is at a screen edge and should switch to a neighbor.
-    async fn check_edge_switch(&self, x: i32, y: i32) -> Option<(PeerId, Message)> {
+    /// `dx`/`dy` is the movement delta since the last event, used to gate on
+    /// direction: the component crossing the edge must be >= the parallel
+    /// component, preventing accidental triggers during near-edge drags.
+    async fn check_edge_switch(&self, x: i32, y: i32, dx: i32, dy: i32) -> Option<(PeerId, Message)> {
         let screens = self.local_screens.lock().await;
         let config = self.config.lock().await;
 
         if let Some((screen_id, edge_hit, ratio)) = detect_edge(x, y, &screens) {
+            // Direction gate: only cross if moving predominantly toward the edge,
+            // not along it. crossing must be >= parallel (45° threshold).
+            // Skip the check when there's no movement (cursor was already at edge).
+            let (crossing, parallel) = match edge_hit {
+                EdgeHit::Left | EdgeHit::Right => (dx.abs(), dy.abs()),
+                EdgeHit::Top | EdgeHit::Bottom => (dy.abs(), dx.abs()),
+            };
+            if crossing > 0 || parallel > 0 {
+                if crossing < parallel {
+                    return None;
+                }
+            }
             let config_edge = match edge_hit {
                 EdgeHit::Left => ScreenEdge::Left,
                 EdgeHit::Right => ScreenEdge::Right,
@@ -169,7 +198,7 @@ impl Engine {
                         // after the cooldown expires can re-trigger edge detection
                         // on the receiving machine, bouncing focus back and causing
                         // keyboard events to stop flowing.
-                        const ENTRY_INSET: i32 = 5;
+                        const ENTRY_INSET: i32 = 15;
                         let (entry_x, entry_y) = match edge_hit {
                             EdgeHit::Right => (
                                 target_screen.x + ENTRY_INSET,

@@ -16,7 +16,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DestroyWindow, DispatchMessageW, GetAncestor,
     GetCursorPos, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
-    SetForegroundWindow, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    SetForegroundWindow, SetWindowsHookExW, ShowCursor, TranslateMessage, UnhookWindowsHookEx,
     WindowFromPoint, HMENU, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
     WINDOW_EX_STYLE, WINDOW_STYLE,
     GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -246,6 +246,16 @@ pub fn set_suppress(suppress: bool) {
     let prev = SUPPRESS.swap(suppress, Ordering::SeqCst);
     if prev != suppress {
         crate::diag(format!("Input suppression: {} → {}", prev, suppress));
+        // Hide the cursor while controlling a remote machine so it doesn't
+        // visibly jitter at the warp-center point. ShowCursor uses a reference
+        // counter so one hide must be paired with exactly one show.
+        unsafe {
+            if suppress {
+                ShowCursor(false);
+            } else {
+                ShowCursor(true);
+            }
+        }
     }
 }
 
