@@ -27,7 +27,15 @@
       "Bash(find C:/Users/joshu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f -name *.rs -path *windows-0.58*)",
       "Bash(npx tsc:*)",
       "Bash(grep '\"\"version\"\"' \"D:/MK Share/shareflow/src-tauri/tauri.conf.json\")",
-      "Bash(grep \"\"\"version\"\"\" package.json)"
+      "Bash(grep \"\"\"version\"\"\" package.json)",
+      "Bash(ls:*)",
+      "Bash(gh release:*)",
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "Bash(grep '\"\"version\"\"' \"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\tauri.conf.json\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File /tmp/monitor.ps1)",
+      "Bash(head -20 grep -n \"camera\\\\|audio\" 'D:/MK Share/shareflow/src-tauri/src/config.rs')",
+      "Bash(grep -v \"//.*camera\\\\|//.*audio\")"
     ]
   }
 }

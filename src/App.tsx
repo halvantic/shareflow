@@ -26,8 +26,6 @@ interface AppConfig {
   port: number;
   discovery_port: number;
   auto_connect: boolean;
-  camera_sharing_enabled: boolean;
-  audio_sharing_enabled: boolean;
   is_primary_km_device: boolean;
   clipboard_sync_enabled: boolean;
   agent_mode: boolean;
@@ -96,29 +94,14 @@ function App() {
   const [settingsDiscoveryPort, setSettingsDiscoveryPort] = useState("");
   const [settingsAutoConnect, setSettingsAutoConnect] = useState(false);
   const [settingsMachineName, setSettingsMachineName] = useState("");
-  const [settingsCameraEnabled, setSettingsCameraEnabled] = useState(false);
-  const [settingsAudioEnabled, setSettingsAudioEnabled] = useState(false);
   const [settingsIsPrimaryKm, setSettingsIsPrimaryKm] = useState(true);
   const [settingsClipboardEnabled, setSettingsClipboardEnabled] = useState(true);
   // Setup wizard state
   const [isFirstRun, setIsFirstRun] = useState(false);
   const [wizardMode, setWizardMode] = useState<"host" | "agent">("host");
   const [wizardHostAddr, setWizardHostAddr] = useState("");
-  // Camera KVM state
-  const [cameraActive, setCameraActive] = useState(false);
-  const [remoteCameras, setRemoteCameras] = useState<Map<string, string>>(new Map());
-  // Audio KVM state
-  const [audioActive, setAudioActive] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const diagRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cameraIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-  const audioRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const nextAudioTimeRef = useRef<number>(0);
 
   const addToast = useCallback(
     (text: string, level: "info" | "success" | "error" = "info") => {
@@ -199,8 +182,6 @@ function App() {
       setSettingsDiscoveryPort(String(cfg.discovery_port || 24801));
       setSettingsAutoConnect(cfg.auto_connect || false);
       setSettingsMachineName(cfg.machine_name || "");
-      setSettingsCameraEnabled(cfg.camera_sharing_enabled || false);
-      setSettingsAudioEnabled(cfg.audio_sharing_enabled || false);
       setSettingsIsPrimaryKm(cfg.is_primary_km_device !== false);
       setSettingsClipboardEnabled(cfg.clipboard_sync_enabled !== false);
       if (cfg.is_first_run) {
@@ -277,12 +258,6 @@ function App() {
           addToast(`Peer disconnected`, "error");
           addLog(`Peer disconnected: ${data.id.slice(0, 8)}...`, "error");
           setPeers((prev) => prev.filter((p) => p.id !== data.id));
-          // Remove any camera feed from this peer
-          setRemoteCameras((prev) => {
-            const next = new Map(prev);
-            next.delete(data.id);
-            return next;
-          });
           break;
         case "Log":
           addLog(data.message, data.level);
@@ -325,54 +300,12 @@ function App() {
             return next;
           });
           break;
-        case "CameraFrame":
-          setRemoteCameras((prev) => {
-            const next = new Map(prev);
-            next.set(data.peer_id, `data:image/jpeg;base64,${data.data_b64}`);
-            return next;
-          });
-          break;
-        case "AudioChunk":
-          // Decode and schedule audio playback via Web Audio API
-          (async () => {
-            try {
-              if (!audioCtxRef.current) {
-                audioCtxRef.current = new AudioContext();
-              }
-              const ctx = audioCtxRef.current;
-              if (ctx.state === "suspended") await ctx.resume();
-              const raw = atob(data.data_b64);
-              const bytes = new Uint8Array(raw.length);
-              for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-              const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
-              const source = ctx.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(ctx.destination);
-              // Schedule to avoid gaps/overlaps between chunks
-              const now = ctx.currentTime;
-              if (nextAudioTimeRef.current < now + 0.05) {
-                nextAudioTimeRef.current = now + 0.05;
-              }
-              source.start(nextAudioTimeRef.current);
-              nextAudioTimeRef.current += audioBuffer.duration;
-            } catch {
-              // Silently ignore decode errors (partial chunks, unsupported codec)
-            }
-          })();
-          break;
       }
     });
 
     return () => {
       clearInterval(cleanupInterval);
       unlisten.then((f) => f());
-      // Stop camera if active
-      if (cameraIntervalRef.current) clearInterval(cameraIntervalRef.current);
-      if (cameraStreamRef.current) cameraStreamRef.current.getTracks().forEach((t) => t.stop());
-      // Stop audio if active
-      if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") audioRecorderRef.current.stop();
-      if (audioStreamRef.current) audioStreamRef.current.getTracks().forEach((t) => t.stop());
-      if (audioCtxRef.current) audioCtxRef.current.close();
     };
   }, [addLog, addToast]);
 
@@ -467,8 +400,6 @@ function App() {
         discoveryPort,
         autoConnect: settingsAutoConnect,
         machineName: settingsMachineName,
-        cameraSharingEnabled: settingsCameraEnabled,
-        audioSharingEnabled: settingsAudioEnabled,
         isPrimaryKmDevice: settingsIsPrimaryKm,
         clipboardSyncEnabled: settingsClipboardEnabled,
       });
@@ -525,123 +456,6 @@ function App() {
     } catch (e: any) {
       addToast(`Setup failed: ${e}`, "error");
     }
-  };
-
-  const handleStartCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 10 } },
-      });
-      cameraStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCameraActive(true);
-      addLog("Camera sharing started", "success");
-      addToast("Camera sharing on", "success");
-
-      // Capture and broadcast frames at ~10fps
-      cameraIntervalRef.current = setInterval(async () => {
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        if (!video || !canvas || video.readyState < 2) return;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(async (blob) => {
-          if (!blob) return;
-          const reader = new FileReader();
-          reader.onload = async () => {
-            const result = reader.result as string;
-            const b64 = result.split(",")[1];
-            if (b64) {
-              try {
-                await invoke("send_camera_frame", { dataB64: b64 });
-              } catch {
-                // Silently ignore send errors (e.g. no peers connected)
-              }
-            }
-          };
-          reader.readAsDataURL(blob);
-        }, "image/jpeg", 0.5);
-      }, 100);
-    } catch (e: any) {
-      addLog(`Camera error: ${e}`, "error");
-      addToast("Camera access denied", "error");
-    }
-  };
-
-  const handleStopCamera = () => {
-    if (cameraIntervalRef.current) {
-      clearInterval(cameraIntervalRef.current);
-      cameraIntervalRef.current = null;
-    }
-    if (cameraStreamRef.current) {
-      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
-      cameraStreamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-    addLog("Camera sharing stopped", "info");
-  };
-
-  const handleStartAudio = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      audioStreamRef.current = stream;
-
-      // Prefer Opus in WebM for wide browser support and good compression
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-
-      const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 });
-      audioRecorderRef.current = recorder;
-
-      recorder.ondataavailable = async (e) => {
-        if (!e.data || e.data.size === 0) return;
-        const reader = new FileReader();
-        reader.onload = async () => {
-          const result = reader.result as string;
-          const b64 = result.split(",")[1];
-          if (b64) {
-            try {
-              await invoke("send_audio_chunk", { dataB64: b64 });
-            } catch {
-              // Silently ignore — no peers connected yet
-            }
-          }
-        };
-        reader.readAsDataURL(e.data);
-      };
-
-      // Emit a chunk every 100ms for low-latency streaming
-      recorder.start(100);
-      setAudioActive(true);
-      addLog("Audio sharing started", "success");
-      addToast("Audio sharing on", "success");
-    } catch (e: any) {
-      addLog(`Microphone error: ${e}`, "error");
-      addToast("Microphone access denied", "error");
-    }
-  };
-
-  const handleStopAudio = () => {
-    if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
-      audioRecorderRef.current.stop();
-      audioRecorderRef.current = null;
-    }
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach((t) => t.stop());
-      audioStreamRef.current = null;
-    }
-    setAudioActive(false);
-    addLog("Audio sharing stopped", "info");
   };
 
   const formatBytes = (bytes: number) => {
@@ -1068,40 +882,6 @@ function App() {
                 </div>
               )}
 
-              {/* Sharing features */}
-              <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, color: "#e94560", fontWeight: 600 }}>
-                Sharing Features
-              </div>
-
-              <div className="settings-group">
-                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={settingsCameraEnabled}
-                    onChange={(e) => setSettingsCameraEnabled(e.target.checked)}
-                  />
-                  Enable Camera KVM
-                </label>
-                <span className="settings-hint">
-                  Allow sharing your webcam feed with connected peers
-                </span>
-              </div>
-
-              <div className="settings-group">
-                <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={settingsAudioEnabled}
-                    onChange={(e) => setSettingsAudioEnabled(e.target.checked)}
-                  />
-                  Enable Audio KVM
-                </label>
-                <span className="settings-hint">
-                  Allow sharing your microphone audio with connected peers (WebM/Opus streaming)
-                </span>
-
-              </div>
-
               <div className="settings-group">
                 <label className="settings-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input
@@ -1183,135 +963,6 @@ function App() {
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {/* Camera KVM — only shown when enabled in Settings */}
-          {config?.camera_sharing_enabled && <div className="section">
-            <h2>Camera KVM</h2>
-            <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-              Share your webcam across connected machines. Peers will see your
-              camera feed in real time.
-            </p>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-              <button
-                onClick={cameraActive ? handleStopCamera : handleStartCamera}
-                style={{ minWidth: 130 }}
-              >
-                {cameraActive ? "Stop Camera Share" : "Share My Camera"}
-              </button>
-              {cameraActive && (
-                <span style={{ fontSize: 11, color: "#4caf50" }}>
-                  Broadcasting to {peers.length} peer(s)
-                </span>
-              )}
-            </div>
-
-            {/* Hidden video + canvas used for frame capture */}
-            <video
-              ref={videoRef}
-              style={{ display: "none" }}
-              muted
-              playsInline
-            />
-            <canvas ref={canvasRef} style={{ display: "none" }} />
-
-            {/* Local camera preview */}
-            {cameraActive && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 12, color: "#aaa", marginBottom: 6 }}>
-                  Your Camera (preview)
-                </div>
-                <video
-                  ref={(el) => {
-                    if (el && cameraStreamRef.current) {
-                      el.srcObject = cameraStreamRef.current;
-                      el.play().catch(() => {});
-                    }
-                  }}
-                  muted
-                  playsInline
-                  autoPlay
-                  style={{
-                    width: 240,
-                    borderRadius: 6,
-                    border: "1px solid #333",
-                    background: "#000",
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Remote camera feeds */}
-            {remoteCameras.size > 0 && (
-              <div>
-                <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>
-                  Remote Cameras
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-                  {Array.from(remoteCameras.entries()).map(([peerId, src]) => {
-                    const peerName =
-                      peers.find((p) => p.id === peerId)?.name ||
-                      peerId.slice(0, 8) + "...";
-                    return (
-                      <div key={peerId}>
-                        <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>
-                          {peerName}
-                        </div>
-                        <img
-                          src={src}
-                          alt={peerName}
-                          style={{
-                            width: 240,
-                            borderRadius: 6,
-                            border: "1px solid #333",
-                            background: "#000",
-                            display: "block",
-                          }}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {remoteCameras.size === 0 && !cameraActive && (
-              <div style={{ fontSize: 12, color: "#555" }}>
-                No camera feeds active. Click "Share My Camera" to broadcast yours, or
-                wait for a connected peer to share theirs.
-              </div>
-            )}
-          </div>}
-
-          {/* Audio KVM — only shown when enabled in Settings */}
-          {config?.audio_sharing_enabled && (
-            <div className="section">
-              <h2>Audio KVM</h2>
-              <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-                Stream your microphone to connected peers. Their audio will play
-                through your speakers via Web Audio. ~100ms latency, WebM/Opus codec.
-              </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                <button
-                  onClick={audioActive ? handleStopAudio : handleStartAudio}
-                  style={{ minWidth: 130 }}
-                >
-                  {audioActive ? "Stop Audio Share" : "Share My Mic"}
-                </button>
-                {audioActive && (
-                  <span style={{ fontSize: 11, color: "#4caf50" }}>
-                    Broadcasting to {peers.length} peer(s)
-                  </span>
-                )}
-              </div>
-              {!audioActive && (
-                <div style={{ fontSize: 12, color: "#555" }}>
-                  Click "Share My Mic" to start streaming your microphone.
-                  Connected peers sharing audio will play automatically through
-                  your speakers.
-                </div>
-              )}
             </div>
           )}
 

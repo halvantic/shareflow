@@ -54,6 +54,20 @@ static FIRST_KEY_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Win key-up reaching the shell opens the Start Menu.
 static WIN_KEY_SUPPRESSED: AtomicBool = AtomicBool::new(false);
 
+/// Whether any peers are currently connected.
+/// When false, non-suppressed input events are not forwarded to the async runtime,
+/// eliminating unnecessary wakeups when the app is idle with no peers.
+static PEERS_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// Timestamp (ms since monotonic epoch) of the last non-suppressed mouse-move
+/// sent to the channel. Throttles edge-detection events to ~60 Hz when peers
+/// are connected, preventing the async runtime from waking 125–1000× per second.
+static LAST_MOVE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Monotonic epoch for cheap elapsed-ms calculations in the hook hot path.
+static MONO_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
 /// Virtual cursor position tracking for warp-to-center remote mouse control.
 static VIRTUAL_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static VIRTUAL_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -355,6 +369,13 @@ pub fn flush_held_modifier_keys() {
     }
 }
 
+/// Notify the hook whether any peers are connected.
+/// When false, non-suppressed events are dropped before reaching the async runtime,
+/// eliminating idle CPU wakeups at the mouse polling rate when no peers exist.
+pub fn set_peers_connected(connected: bool) {
+    PEERS_CONNECTED.store(connected, Ordering::Relaxed);
+}
+
 /// Initialize remote mouse control: set virtual position and warp cursor to screen center.
 pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
@@ -435,10 +456,23 @@ unsafe extern "system" fn mouse_hook_proc(
         }
 
         let event = match wparam.0 as u32 {
-            WM_MOUSEMOVE => Some(InputEvent::MouseMove(MouseMoveEvent {
-                x: data.pt.x,
-                y: data.pt.y,
-            })),
+            // Non-suppressed mouse moves: only forward when peers are connected and
+            // at most 60 Hz (16 ms gate). This mirrors the macOS optimisation and
+            // eliminates constant async-runtime wakeups at the mouse polling rate.
+            WM_MOUSEMOVE => {
+                if PEERS_CONNECTED.load(Ordering::Relaxed) {
+                    let now_ms = MONO_EPOCH.elapsed().as_millis() as u64;
+                    let last_ms = LAST_MOVE_MS.load(Ordering::Relaxed);
+                    if now_ms.wrapping_sub(last_ms) >= 16 {
+                        LAST_MOVE_MS.store(now_ms, Ordering::Relaxed);
+                        Some(InputEvent::MouseMove(MouseMoveEvent { x: data.pt.x, y: data.pt.y }))
+                    } else {
+                        None // throttled — let event pass through to OS normally
+                    }
+                } else {
+                    None // no peers — skip channel send entirely
+                }
+            }
             WM_LBUTTONDOWN => Some(InputEvent::MouseButton(MouseButtonEvent {
                 button: MouseButton::Left,
                 pressed: true,
@@ -499,8 +533,12 @@ unsafe extern "system" fn mouse_hook_proc(
         };
 
         if let Some(event) = event {
-            if let Some(tx) = EVENT_SENDER.get() {
-                let _ = tx.send(event);
+            // Only wake the async runtime when suppressed (controlling remote) or
+            // peers are connected (need forwarding / edge detection).
+            if suppress || PEERS_CONNECTED.load(Ordering::Relaxed) {
+                if let Some(tx) = EVENT_SENDER.get() {
+                    let _ = tx.send(event);
+                }
             }
 
             if suppress {
@@ -581,12 +619,14 @@ unsafe extern "system" fn keyboard_hook_proc(
             pressed,
         });
 
-        if let Some(tx) = EVENT_SENDER.get() {
-            let _ = tx.send(event);
+        let suppress_now = SUPPRESS.load(Ordering::SeqCst);
+        if suppress_now || PEERS_CONNECTED.load(Ordering::Relaxed) {
+            if let Some(tx) = EVENT_SENDER.get() {
+                let _ = tx.send(event);
+            }
         }
 
-        // Only suppress if focus is on remote machine
-        if SUPPRESS.load(Ordering::SeqCst) {
+        if suppress_now {
             return LRESULT(1);
         }
         // Key not suppressed — pass through to OS

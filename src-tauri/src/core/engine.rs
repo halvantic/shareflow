@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::core::config::{AppConfig, ScreenEdge};
@@ -38,6 +39,12 @@ pub struct Engine {
     /// Last known local cursor position, used to compute movement direction for
     /// the edge-switch velocity gate (prevents accidental triggers during drags).
     pub last_mouse_pos: Arc<Mutex<Option<(i32, i32)>>>,
+    /// Cached: whether this machine is the primary K+M controller.
+    /// Updated atomically on config save — avoids locking config in the hot input path.
+    pub primary_km: Arc<AtomicBool>,
+    /// Cached: whether focus is currently Remote (controlling another machine).
+    /// Updated atomically on every focus switch — avoids locking focus in the hot input path.
+    pub is_remote: Arc<AtomicBool>,
 }
 
 /// Events pushed to the frontend UI.
@@ -67,20 +74,11 @@ pub enum UiEvent {
         name: String,
         address: String,
     },
-    /// A camera frame received from a peer (base64-encoded JPEG).
-    CameraFrame {
-        peer_id: String,
-        data_b64: String,
-    },
-    /// An audio chunk received from a peer (base64-encoded WebM/Opus).
-    AudioChunk {
-        peer_id: String,
-        data_b64: String,
-    },
 }
 
 impl Engine {
     pub fn new(config: AppConfig, ui_events: mpsc::Sender<UiEvent>) -> Self {
+        let primary_km_val = config.is_primary_km_device && !config.agent_mode;
         Self {
             config: Arc::new(Mutex::new(config)),
             focus: Arc::new(Mutex::new(FocusState::Local)),
@@ -90,6 +88,8 @@ impl Engine {
             file_receiver: FileReceiver::new(),
             last_switch_time: Arc::new(Mutex::new(None)),
             last_mouse_pos: Arc::new(Mutex::new(None)),
+            primary_km: Arc::new(AtomicBool::new(primary_km_val)),
+            is_remote: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -160,8 +160,12 @@ impl Engine {
     /// direction: the component crossing the edge must be >= the parallel
     /// component, preventing accidental triggers during near-edge drags.
     async fn check_edge_switch(&self, x: i32, y: i32, dx: i32, dy: i32) -> Option<(PeerId, Message)> {
-        let screens = self.local_screens.lock().await;
+        // Fast path: if no neighbors configured, skip locking screens/peers entirely.
         let config = self.config.lock().await;
+        if config.neighbors.is_empty() {
+            return None;
+        }
+        let screens = self.local_screens.lock().await;
 
         if let Some((screen_id, edge_hit, ratio)) = detect_edge(x, y, &screens) {
             // Direction gate: only cross if moving predominantly toward the edge,
@@ -272,6 +276,7 @@ impl Engine {
         // state.
         crate::input::flush_held_keys();
 
+        self.is_remote.store(true, Ordering::Release);
         crate::input::set_input_suppression(true);
 
         // Initialize virtual cursor tracking AFTER suppression is active.
@@ -310,6 +315,7 @@ impl Engine {
         let mut focus = self.focus.lock().await;
         *focus = FocusState::Local;
         drop(focus);
+        self.is_remote.store(false, Ordering::Release);
         crate::input::set_input_suppression(false);
         crate::diag("Focus → local".into());
         let _ = self

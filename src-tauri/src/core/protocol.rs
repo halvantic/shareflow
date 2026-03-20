@@ -72,12 +72,6 @@ pub enum Message {
         reason: String,
     },
 
-    /// Camera frame from a peer (JPEG-encoded bytes).
-    CameraFrame { data: Vec<u8> },
-
-    /// Audio chunk from a peer (WebM/Opus encoded bytes).
-    AudioChunk { data: Vec<u8> },
-
     /// Notify peers that our screen configuration has changed (e.g. after wake).
     ScreenUpdate {
         screens: Vec<ScreenInfo>,

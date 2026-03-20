@@ -613,6 +613,9 @@ extern "C" fn event_tap_callback(
     };
 
     let suppress = SUPPRESS.load(Ordering::SeqCst);
+    // For non-suppressed events, only wake the async runtime when peers are connected.
+    // When suppressed (controlling remote) we always need to forward events.
+    let should_send = suppress || PEERS_CONNECTED.load(Ordering::Relaxed);
 
     unsafe {
         match event_type {
@@ -679,82 +682,100 @@ extern "C" fn event_tap_callback(
             }
 
             KCG_EVENT_LEFT_MOUSE_DOWN => {
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button: MouseButton::Left,
-                    pressed: true,
-                }));
+                if should_send {
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button: MouseButton::Left,
+                        pressed: true,
+                    }));
+                }
             }
             KCG_EVENT_LEFT_MOUSE_UP => {
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button: MouseButton::Left,
-                    pressed: false,
-                }));
+                if should_send {
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button: MouseButton::Left,
+                        pressed: false,
+                    }));
+                }
             }
             KCG_EVENT_RIGHT_MOUSE_DOWN => {
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button: MouseButton::Right,
-                    pressed: true,
-                }));
+                if should_send {
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button: MouseButton::Right,
+                        pressed: true,
+                    }));
+                }
             }
             KCG_EVENT_RIGHT_MOUSE_UP => {
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button: MouseButton::Right,
-                    pressed: false,
-                }));
+                if should_send {
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button: MouseButton::Right,
+                        pressed: false,
+                    }));
+                }
             }
             KCG_EVENT_OTHER_MOUSE_DOWN => {
-                let btn_num = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
-                let button = match btn_num {
-                    2 => MouseButton::Middle,
-                    3 => MouseButton::Button4,
-                    4 => MouseButton::Button5,
-                    _ => MouseButton::Middle,
-                };
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button,
-                    pressed: true,
-                }));
+                if should_send {
+                    let btn_num = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
+                    let button = match btn_num {
+                        2 => MouseButton::Middle,
+                        3 => MouseButton::Button4,
+                        4 => MouseButton::Button5,
+                        _ => MouseButton::Middle,
+                    };
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button,
+                        pressed: true,
+                    }));
+                }
             }
             KCG_EVENT_OTHER_MOUSE_UP => {
-                let btn_num = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
-                let button = match btn_num {
-                    2 => MouseButton::Middle,
-                    3 => MouseButton::Button4,
-                    4 => MouseButton::Button5,
-                    _ => MouseButton::Middle,
-                };
-                let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
-                    button,
-                    pressed: false,
-                }));
+                if should_send {
+                    let btn_num = CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER);
+                    let button = match btn_num {
+                        2 => MouseButton::Middle,
+                        3 => MouseButton::Button4,
+                        4 => MouseButton::Button5,
+                        _ => MouseButton::Middle,
+                    };
+                    let _ = sender.send(InputEvent::MouseButton(MouseButtonEvent {
+                        button,
+                        pressed: false,
+                    }));
+                }
             }
 
             KCG_EVENT_SCROLL_WHEEL => {
-                let dy = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1);
-                let dx = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_2);
-                // Normalize to Windows WHEEL_DELTA convention (120 per notch).
-                // Use saturating_mul to prevent i32 overflow on high-res trackpads.
-                let _ = sender.send(InputEvent::MouseScroll(MouseScrollEvent {
-                    dx: (dx as i32).saturating_mul(120),
-                    dy: (dy as i32).saturating_mul(120),
-                }));
+                if should_send {
+                    let dy = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1);
+                    let dx = CGEventGetIntegerValueField(event, KCG_SCROLL_WHEEL_EVENT_DELTA_AXIS_2);
+                    // Normalize to Windows WHEEL_DELTA convention (120 per notch).
+                    // Use saturating_mul to prevent i32 overflow on high-res trackpads.
+                    let _ = sender.send(InputEvent::MouseScroll(MouseScrollEvent {
+                        dx: (dx as i32).saturating_mul(120),
+                        dy: (dy as i32).saturating_mul(120),
+                    }));
+                }
             }
 
             KCG_EVENT_KEY_DOWN => {
-                let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
-                let scancode = mac_vk_to_scancode(vk);
-                let _ = sender.send(InputEvent::Key(KeyEvent {
-                    scancode,
-                    pressed: true,
-                }));
+                if should_send {
+                    let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
+                    let scancode = mac_vk_to_scancode(vk);
+                    let _ = sender.send(InputEvent::Key(KeyEvent {
+                        scancode,
+                        pressed: true,
+                    }));
+                }
             }
             KCG_EVENT_KEY_UP => {
-                let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
-                let scancode = mac_vk_to_scancode(vk);
-                let _ = sender.send(InputEvent::Key(KeyEvent {
-                    scancode,
-                    pressed: false,
-                }));
+                if should_send {
+                    let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
+                    let scancode = mac_vk_to_scancode(vk);
+                    let _ = sender.send(InputEvent::Key(KeyEvent {
+                        scancode,
+                        pressed: false,
+                    }));
+                }
             }
 
             KCG_EVENT_FLAGS_CHANGED => {
@@ -783,7 +804,9 @@ extern "C" fn event_tap_callback(
                     state.prev_flags = flags;
                 }
 
-                let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
+                if should_send {
+                    let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
+                }
             }
 
             _ => {}

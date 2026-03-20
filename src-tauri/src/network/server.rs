@@ -289,28 +289,6 @@ async fn handle_peer_session(
                     log::debug!("ConfigSync from host: clipboard_sync_enabled={}", clipboard_sync_enabled);
                 }
             }
-            Message::CameraFrame { data } => {
-                use base64::engine::Engine as _;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                let _ = engine
-                    .ui_events
-                    .send(crate::core::engine::UiEvent::CameraFrame {
-                        peer_id: remote_peer_id.clone(),
-                        data_b64: b64,
-                    })
-                    .await;
-            }
-            Message::AudioChunk { data } => {
-                use base64::engine::Engine as _;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                let _ = engine
-                    .ui_events
-                    .send(crate::core::engine::UiEvent::AudioChunk {
-                        peer_id: remote_peer_id.clone(),
-                        data_b64: b64,
-                    })
-                    .await;
-            }
             Message::ScreenUpdate { screens } => {
                 engine.update_peer_screens(&remote_peer_id, screens).await;
             }

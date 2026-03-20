@@ -62,6 +62,9 @@ fn save_config(state: tauri::State<'_, AppState>, config: AppConfig) -> Result<(
         let mut current = engine.config.lock().await;
         *current = config;
         current.save();
+        let km = current.is_primary_km_device && !current.agent_mode;
+        drop(current);
+        engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
     });
     Ok(())
 }
@@ -142,7 +145,7 @@ async fn connect_to_peer_cmd(
                 while let Some(msg) = conn.incoming.recv().await {
                     match msg {
                         crate::core::protocol::Message::MouseMove(mv) => {
-                            if engine.get_focus().await != FocusState::Local {
+                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
                                 continue;
                             }
                             let _ = injector.move_mouse(mv.x, mv.y);
@@ -155,7 +158,7 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::MouseButton(mb) => {
-                            if engine.get_focus().await != FocusState::Local {
+                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
                                 continue;
                             }
                             if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
@@ -163,7 +166,7 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::MouseScroll(ms) => {
-                            if engine.get_focus().await != FocusState::Local {
+                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
                                 continue;
                             }
                             if let Err(e) = injector.scroll(ms.dx, ms.dy) {
@@ -171,7 +174,7 @@ async fn connect_to_peer_cmd(
                             }
                         }
                         crate::core::protocol::Message::Key(ke) => {
-                            if engine.get_focus().await != FocusState::Local {
+                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
                                 continue;
                             }
                             if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
@@ -193,28 +196,6 @@ async fn connect_to_peer_cmd(
                             if engine.config.lock().await.clipboard_sync_enabled {
                                 crate::clipboard::sync::apply_remote_clipboard(content);
                             }
-                        }
-                        crate::core::protocol::Message::CameraFrame { data } => {
-                            use base64::engine::Engine as _;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            let _ = engine
-                                .ui_events
-                                .send(UiEvent::CameraFrame {
-                                    peer_id: remote_peer_id.clone(),
-                                    data_b64: b64,
-                                })
-                                .await;
-                        }
-                        crate::core::protocol::Message::AudioChunk { data } => {
-                            use base64::engine::Engine as _;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            let _ = engine
-                                .ui_events
-                                .send(UiEvent::AudioChunk {
-                                    peer_id: remote_peer_id.clone(),
-                                    data_b64: b64,
-                                })
-                                .await;
                         }
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine.update_peer_screens(&remote_peer_id, screens).await;
@@ -392,40 +373,6 @@ async fn set_neighbor(
 }
 
 #[tauri::command]
-async fn send_audio_chunk(
-    state: tauri::State<'_, AppState>,
-    data_b64: String,
-) -> Result<(), String> {
-    use base64::engine::Engine as _;
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(&data_b64)
-        .map_err(|e| e.to_string())?;
-    let msg = crate::core::protocol::Message::AudioChunk { data };
-    let peers = state.engine.peers.lock().await;
-    for peer in peers.values() {
-        let _ = peer.sender.send(msg.clone()).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn send_camera_frame(
-    state: tauri::State<'_, AppState>,
-    data_b64: String,
-) -> Result<(), String> {
-    use base64::engine::Engine as _;
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(&data_b64)
-        .map_err(|e| e.to_string())?;
-    let msg = crate::core::protocol::Message::CameraFrame { data };
-    let peers = state.engine.peers.lock().await;
-    for peer in peers.values() {
-        let _ = peer.sender.send(msg.clone()).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn get_diagnostics() -> Vec<String> {
     DIAG_LOG.lock().map(|buf| buf.iter().cloned().collect()).unwrap_or_default()
 }
@@ -462,8 +409,6 @@ async fn update_settings(
     discovery_port: u16,
     auto_connect: bool,
     machine_name: String,
-    camera_sharing_enabled: bool,
-    audio_sharing_enabled: bool,
     is_primary_km_device: bool,
     clipboard_sync_enabled: bool,
 ) -> Result<(), String> {
@@ -471,8 +416,6 @@ async fn update_settings(
     config.port = port;
     config.discovery_port = discovery_port;
     config.auto_connect = auto_connect;
-    config.camera_sharing_enabled = camera_sharing_enabled;
-    config.audio_sharing_enabled = audio_sharing_enabled;
     // Agents are always non-primary — ignore any value passed in.
     config.is_primary_km_device = if config.agent_mode { false } else { is_primary_km_device };
     config.clipboard_sync_enabled = clipboard_sync_enabled;
@@ -480,6 +423,7 @@ async fn update_settings(
         config.machine_name = machine_name;
     }
     config.save();
+    let km = config.is_primary_km_device && !config.agent_mode;
 
     // If we are the host, push updated settings to all connected agents.
     if !config.agent_mode {
@@ -493,6 +437,7 @@ async fn update_settings(
         }
     }
 
+    state.engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -519,6 +464,9 @@ async fn complete_setup(
         config.is_primary_km_device = false;
     }
     config.save();
+    let km = config.is_primary_km_device && !config.agent_mode;
+    drop(config);
+    state.engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -866,28 +814,6 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                                 crate::clipboard::sync::apply_remote_clipboard(content);
                             }
                         }
-                        crate::core::protocol::Message::CameraFrame { data } => {
-                            use base64::engine::Engine as _;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            let _ = engine2
-                                .ui_events
-                                .send(UiEvent::CameraFrame {
-                                    peer_id: remote_peer_id.clone(),
-                                    data_b64: b64,
-                                })
-                                .await;
-                        }
-                        crate::core::protocol::Message::AudioChunk { data } => {
-                            use base64::engine::Engine as _;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            let _ = engine2
-                                .ui_events
-                                .send(UiEvent::AudioChunk {
-                                    peer_id: remote_peer_id.clone(),
-                                    data_b64: b64,
-                                })
-                                .await;
-                        }
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
                             engine2.update_peer_screens(&remote_peer_id, screens).await;
                         }
@@ -1057,8 +983,6 @@ pub fn run() {
             switch_focus_local,
             set_neighbor,
             send_file_to_peer,
-            send_camera_frame,
-            send_audio_chunk,
             get_diagnostics,
             quit_app,
             update_settings,
@@ -1212,22 +1136,30 @@ pub fn run() {
             {
                 let engine_display = engine.clone();
                 let display_rx = input::start_display_change_monitor();
+                // Bridge the blocking std mpsc receiver onto a tokio channel so the
+                // async task does not occupy a tokio worker thread while waiting.
+                let (async_disp_tx, mut async_disp_rx) = tokio::sync::mpsc::channel::<()>(4);
+                std::thread::Builder::new()
+                    .name("display-change-bridge".into())
+                    .spawn(move || {
+                        loop {
+                            match display_rx.recv() {
+                                Ok(()) => { if async_disp_tx.blocking_send(()).is_err() { break; } }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                    .ok();
                 tauri::async_runtime::spawn(async move {
-                    // Bridge from sync receiver to async with debouncing.
                     // macOS fires multiple callbacks per reconfiguration event,
                     // so we debounce with a short delay.
-                    loop {
-                        match display_rx.recv() {
-                            Ok(()) => {
-                                // Debounce: wait a moment for the display config to stabilize
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                // Drain any additional notifications that arrived during debounce
-                                while display_rx.try_recv().is_ok() {}
-                                diag("Display configuration changed — refreshing screens".into());
-                                engine_display.refresh_and_broadcast_screens().await;
-                            }
-                            Err(_) => break,
-                        }
+                    while let Some(()) = async_disp_rx.recv().await {
+                        // Debounce: wait for the display config to stabilize.
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        // Drain any additional notifications that arrived during debounce.
+                        while async_disp_rx.try_recv().is_ok() {}
+                        diag("Display configuration changed — refreshing screens".into());
+                        engine_display.refresh_and_broadcast_screens().await;
                     }
                 });
             }

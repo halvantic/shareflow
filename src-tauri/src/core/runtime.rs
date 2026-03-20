@@ -31,11 +31,14 @@ pub async fn start_input_loop(
     while let Some(event) = event_rx.recv().await {
         // Check if focus changed — if so, reset modifiers to prevent stale keys
         // after device switching (e.g., Ctrl held on Windows, key-up on Mac).
-        let current_focus = engine.get_focus().await;
-        if current_focus != last_focus {
+        // Use the atomic flag to avoid a mutex lock on every event; only acquire
+        // the mutex when the flag indicates an actual state transition.
+        let currently_remote = engine.is_remote.load(std::sync::atomic::Ordering::Acquire);
+        let was_remote = matches!(last_focus, FocusState::Remote(_));
+        if currently_remote != was_remote {
             ctrl_held = false;
             cmd_held = false;
-            last_focus = current_focus;
+            last_focus = engine.get_focus().await;
             log::debug!("Focus changed, reset modifier state");
         }
 
@@ -55,8 +58,8 @@ pub async fn start_input_loop(
             let is_paste = ke.pressed && ke.scancode == SC_V && modifier;
 
             if is_copy || is_paste {
-                // Capture focus state at shortcut detection time
-                let focus_at_detection = engine.get_focus().await;
+                // Reuse the focus already read at the top of this iteration — no extra mutex.
+                let focus_at_detection = last_focus.clone();
 
                 if is_copy {
                     if let FocusState::Local = focus_at_detection {
@@ -115,14 +118,14 @@ pub async fn start_input_loop(
         // non-primary device's focus switches to Remote, input suppression
         // activates on that machine and it becomes completely stuck (no way
         // to control anything, no way to get back to Local).
-        let cfg = engine.config.lock().await;
-        let is_primary_km = cfg.is_primary_km_device && !cfg.agent_mode;
-        drop(cfg);
+        // Read from atomic — avoids locking config on every input event.
+        let is_primary_km = engine.primary_km.load(std::sync::atomic::Ordering::Relaxed);
 
         if !is_primary_km {
             // If we somehow ended up in Remote focus (e.g., setting changed mid-session),
             // switch back immediately so input suppression is released.
-            if matches!(engine.get_focus().await, FocusState::Remote(_)) {
+            // Reuse the focus we already read at the top of this iteration.
+            if matches!(last_focus, FocusState::Remote(_)) {
                 engine.switch_to_local().await;
             }
             continue; // Skip all input forwarding for non-primary K+M devices
