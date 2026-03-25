@@ -5,7 +5,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // macOS: cheap NSPasteboard changeCount check
@@ -52,35 +51,6 @@ fn macos_pasteboard_change_count() -> i64 {
 
 /// Set when clipboard was updated by a remote peer, to avoid re-broadcasting it back.
 static REMOTE_SET: AtomicBool = AtomicBool::new(false);
-
-/// Timestamp of the last time we broadcast a locally-originated clipboard change to peers.
-/// Used to suppress incoming peer clipboard updates for a short window after a local push,
-/// preventing the peer from echoing our clipboard back and overwriting it (e.g., a Snipping
-/// Tool screenshot that gets sent to the peer then bounced back as a stripped arboard copy).
-static LAST_LOCAL_PUSH: std::sync::LazyLock<Mutex<Option<Instant>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
-
-/// How long to ignore incoming clipboard updates after pushing a local clipboard change.
-const LOCAL_PUSH_PROTECT_MS: u64 = 2000;
-
-/// Record that we just pushed a local clipboard change to one or more peers.
-/// Call this immediately after broadcasting a locally-originated clipboard update.
-pub fn notify_local_push() {
-    if let Ok(mut guard) = LAST_LOCAL_PUSH.lock() {
-        *guard = Some(Instant::now());
-    }
-}
-
-/// Returns true if we pushed a local clipboard change recently enough that we should
-/// ignore incoming clipboard updates from peers (protection against echo-back).
-fn recently_pushed_locally() -> bool {
-    LAST_LOCAL_PUSH
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .map(|t| t.elapsed() < Duration::from_millis(LOCAL_PUSH_PROTECT_MS))
-        .unwrap_or(false)
-}
 
 /// Global mutex to serialize all clipboard access.
 /// On Windows, arboard uses OLE clipboard APIs that are not thread-safe —
@@ -203,15 +173,6 @@ pub fn get_clipboard_fingerprint() -> Option<ClipboardFingerprint> {
 /// The REMOTE_SET flag is set BEFORE modifying the clipboard to prevent a race
 /// where poll_clipboard_change reads the new content before seeing the flag.
 pub fn apply_remote_clipboard(content: ClipboardContent) {
-    // If we recently pushed a local clipboard change, ignore peer updates for a short
-    // window. This prevents the peer from echoing our content back and overwriting it
-    // (e.g. a Snipping Tool screenshot replaced by the peer's older clipboard content,
-    // or by a stripped arboard-only version that loses CF_BITMAP and proprietary formats).
-    if recently_pushed_locally() {
-        log::debug!("Ignoring remote clipboard update: within local-push protection window");
-        return;
-    }
-
     // Set flag BEFORE modifying clipboard to prevent race with poll_clipboard_change
     REMOTE_SET.store(true, Ordering::SeqCst);
 

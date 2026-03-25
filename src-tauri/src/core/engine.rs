@@ -36,9 +36,6 @@ pub struct Engine {
     pub file_receiver: FileReceiver,
     /// Cooldown: last time a focus switch occurred, to prevent rapid oscillation.
     pub last_switch_time: Arc<Mutex<Option<std::time::Instant>>>,
-    /// Last known local cursor position, used to compute movement direction for
-    /// the edge-switch velocity gate (prevents accidental triggers during drags).
-    pub last_mouse_pos: Arc<Mutex<Option<(i32, i32)>>>,
     /// Cached: whether this machine is the primary K+M controller.
     /// Updated atomically on config save — avoids locking config in the hot input path.
     pub primary_km: Arc<AtomicBool>,
@@ -87,7 +84,6 @@ impl Engine {
             ui_events,
             file_receiver: FileReceiver::new(),
             last_switch_time: Arc::new(Mutex::new(None)),
-            last_mouse_pos: Arc::new(Mutex::new(None)),
             primary_km: Arc::new(AtomicBool::new(primary_km_val)),
             is_remote: Arc::new(AtomicBool::new(false)),
         }
@@ -102,17 +98,7 @@ impl Engine {
             FocusState::Local => {
                 // Check for screen edge transitions
                 if let InputEvent::MouseMove(ref mv) = event {
-                    // Compute movement delta for the direction gate.
-                    let (dx, dy) = {
-                        let mut last = self.last_mouse_pos.lock().await;
-                        let delta = match *last {
-                            Some((px, py)) => (mv.x - px, mv.y - py),
-                            None => (0, 0),
-                        };
-                        *last = Some((mv.x, mv.y));
-                        delta
-                    };
-                    let result = self.check_edge_switch(mv.x, mv.y, dx, dy).await;
+                    let result = self.check_edge_switch(mv.x, mv.y).await;
                     if result.is_some() {
                         // Cooldown: prevent rapid oscillation between machines.
                         // Without this, in-flight messages and edge-detection races
@@ -156,10 +142,7 @@ impl Engine {
     }
 
     /// Check if the cursor is at a screen edge and should switch to a neighbor.
-    /// `dx`/`dy` is the movement delta since the last event, used to gate on
-    /// direction: the component crossing the edge must be >= the parallel
-    /// component, preventing accidental triggers during near-edge drags.
-    async fn check_edge_switch(&self, x: i32, y: i32, dx: i32, dy: i32) -> Option<(PeerId, Message)> {
+    async fn check_edge_switch(&self, x: i32, y: i32) -> Option<(PeerId, Message)> {
         // Fast path: if no neighbors configured, skip locking screens/peers entirely.
         let config = self.config.lock().await;
         if config.neighbors.is_empty() {
@@ -168,18 +151,6 @@ impl Engine {
         let screens = self.local_screens.lock().await;
 
         if let Some((screen_id, edge_hit, ratio)) = detect_edge(x, y, &screens) {
-            // Direction gate: only cross if moving predominantly toward the edge,
-            // not along it. crossing must be >= parallel (45° threshold).
-            // Skip the check when there's no movement (cursor was already at edge).
-            let (crossing, parallel) = match edge_hit {
-                EdgeHit::Left | EdgeHit::Right => (dx.abs(), dy.abs()),
-                EdgeHit::Top | EdgeHit::Bottom => (dy.abs(), dx.abs()),
-            };
-            if crossing > 0 || parallel > 0 {
-                if crossing < parallel {
-                    return None;
-                }
-            }
             let config_edge = match edge_hit {
                 EdgeHit::Left => ScreenEdge::Left,
                 EdgeHit::Right => ScreenEdge::Right,
@@ -289,7 +260,6 @@ impl Engine {
         // Push our local clipboard to the remote peer immediately so that Ctrl+V
         // on the remote machine uses our clipboard content rather than its own.
         if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
-            crate::clipboard::sync::notify_local_push();
             let peers = self.peers.lock().await;
             if let Some(peer) = peers.get(peer_id) {
                 let _ = peer

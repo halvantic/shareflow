@@ -1103,9 +1103,8 @@ pub fn run() {
 
             // Start clipboard sync (event-driven on Windows, polling on other platforms).
             let engine_clip = engine.clone();
-            let (_clip_stop_tx, clip_stop_rx) = tokio::sync::watch::channel(false);
             tauri::async_runtime::spawn(async move {
-                core::runtime::start_clipboard_sync(engine_clip, clip_stop_rx, clip_change_rx).await;
+                core::runtime::start_clipboard_sync(engine_clip, clip_change_rx).await;
             });
 
             // Agent mode: auto-connect to the configured host on startup.

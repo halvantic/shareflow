@@ -75,7 +75,6 @@ pub async fn start_input_loop(
                             tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 log::debug!("Copy handler: broadcasting clipboard to peers");
-                                clipboard::sync::notify_local_push();
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
                                     let _ = peer
@@ -203,14 +202,12 @@ pub fn start_clipboard_change_bridge(
 }
 
 /// Start clipboard monitoring loop.
-/// The loop exits when `cancel` is signalled (send `true` to stop).
 ///
 /// `clip_events`: on Windows, pass the receiver from `start_clipboard_change_bridge`
 /// to use event-driven `WM_CLIPBOARDUPDATE` notifications instead of polling.
 /// Pass `None` on other platforms to use the 300ms polling fallback.
 pub async fn start_clipboard_sync(
     engine: Arc<Engine>,
-    mut cancel: tokio::sync::watch::Receiver<bool>,
     mut clip_events: Option<mpsc::Receiver<()>>,
 ) {
     log::info!("Clipboard sync started ({})",
@@ -218,27 +215,20 @@ pub async fn start_clipboard_sync(
     let mut last_known = clipboard::sync::get_clipboard_fingerprint();
 
     loop {
-        tokio::select! {
-            // Wait for a clipboard change event (Windows) or a 300ms poll timer
-            // (macOS/Linux). WM_CLIPBOARDUPDATE fires AFTER the clipboard owner
-            // has released it, so we can never race with a concurrent paste.
-            _ = async {
-                match &mut clip_events {
-                    Some(rx) => {
-                        let _ = rx.recv().await;
-                        // Drain any extra signals queued during rapid clipboard changes
-                        // (e.g. an app that writes multiple formats in sequence).
-                        while rx.try_recv().is_ok() {}
-                    }
-                    None => tokio::time::sleep(Duration::from_millis(300)).await,
-                }
-            } => {}
-            _ = cancel.changed() => {
-                if *cancel.borrow() {
-                    log::info!("Clipboard sync stopped");
+        // Wait for a clipboard change event (Windows) or a 300ms poll timer
+        // (macOS/Linux). WM_CLIPBOARDUPDATE fires AFTER the clipboard owner
+        // has released it, so we can never race with a concurrent paste.
+        match &mut clip_events {
+            Some(rx) => {
+                if rx.recv().await.is_none() {
+                    log::info!("Clipboard change channel closed, stopping sync");
                     break;
                 }
+                // Drain any extra signals queued during rapid clipboard changes
+                // (e.g. an app that writes multiple formats in sequence).
+                while rx.try_recv().is_ok() {}
             }
+            None => tokio::time::sleep(Duration::from_millis(300)).await,
         }
 
         // Skip entirely when clipboard sync is disabled or no peers connected.
@@ -256,7 +246,6 @@ pub async fn start_clipboard_sync(
             // Mark that we are pushing a locally-originated clipboard so that any
             // echo back from the peer (e.g. Snipping Tool screenshot bounced back as
             // a stripped arboard copy) is ignored for a short protection window.
-            clipboard::sync::notify_local_push();
             // Broadcast to all connected peers regardless of focus state.
             // This ensures that whichever machine you're currently controlling always
             // has your latest clipboard content available for pasting.
