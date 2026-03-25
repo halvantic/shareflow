@@ -69,6 +69,10 @@ pub fn init_remote_mouse(_virtual_x: i32, _virtual_y: i32, _rs_x: i32, _rs_y: i3
     log::warn!("Linux remote mouse init not yet implemented");
 }
 
+pub fn update_remote_bounds(_rs_x: i32, _rs_y: i32, _rs_w: i32, _rs_h: i32) {
+    log::warn!("Linux update_remote_bounds not yet implemented");
+}
+
 pub fn get_screens_linux() -> Vec<crate::core::protocol::ScreenInfo> {
     log::warn!("Linux screen detection not yet implemented, returning default");
     vec![crate::core::protocol::ScreenInfo {

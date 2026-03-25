@@ -1159,6 +1159,17 @@ pub fn run() {
                         while async_disp_rx.try_recv().is_ok() {}
                         diag("Display configuration changed — refreshing screens".into());
                         engine_display.refresh_and_broadcast_screens().await;
+
+                        // Secondary refresh: macOS may initially report a
+                        // transitional resolution after sleep/wake (e.g. 1920×1080
+                        // on an ultrawide). Fire a second refresh after the display
+                        // has fully settled to catch the native resolution.
+                        let engine_retry = engine_display.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            diag("Secondary screen refresh after wake".into());
+                            engine_retry.refresh_and_broadcast_screens().await;
+                        });
                     }
                 });
             }

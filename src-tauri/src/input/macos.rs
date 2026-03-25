@@ -153,6 +153,16 @@ fn reset_injected_modifiers() {
     }
 }
 
+/// Update remote screen bounds without resetting virtual cursor.
+/// Used when the remote peer's display configuration changes mid-session.
+pub fn update_remote_bounds(rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
+    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
+    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
+    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
+    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
+    log::info!("Remote bounds updated: {}x{} @ ({},{})", rs_w, rs_h, rs_x, rs_y);
+}
+
 /// Initialize remote mouse control: set virtual position to the entry point on the remote screen.
 pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);

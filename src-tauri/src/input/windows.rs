@@ -376,7 +376,19 @@ pub fn set_peers_connected(connected: bool) {
     PEERS_CONNECTED.store(connected, Ordering::Relaxed);
 }
 
-/// Initialize remote mouse control: set virtual position and warp cursor to screen center.
+/// Update remote screen bounds without resetting virtual cursor or warping.
+/// Used when the remote peer's display configuration changes mid-session.
+pub fn update_remote_bounds(rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
+    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
+    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
+    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
+    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
+    log::info!("Remote bounds updated: {}x{} @ ({},{})", rs_w, rs_h, rs_x, rs_y);
+}
+
+/// Initialize remote mouse control: set virtual position and anchor the warp
+/// point at the current cursor position so the cursor stays where it is
+/// (at the screen edge) instead of jumping to the center.
 pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
     VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
@@ -385,12 +397,16 @@ pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, r
     REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
     REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
     unsafe {
-        let screen_w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let mut pt: POINT = std::mem::zeroed();
+        let _ = GetCursorPos(&mut pt);
+        // Nudge 1px inward from any screen edge so the OS doesn't clip
+        // deltas when the mouse moves further into the edge.
         let virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
         let virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let cx = virt_x + screen_w / 2;
-        let cy = virt_y + screen_h / 2;
+        let virt_r = virt_x + GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1;
+        let virt_b = virt_y + GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1;
+        let cx = pt.x.clamp(virt_x + 1, virt_r - 1);
+        let cy = pt.y.clamp(virt_y + 1, virt_b - 1);
         WARP_CENTER_X.store(cx, Ordering::SeqCst);
         WARP_CENTER_Y.store(cy, Ordering::SeqCst);
         warp_cursor_to_center(cx, cy);

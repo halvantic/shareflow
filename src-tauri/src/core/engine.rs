@@ -315,6 +315,9 @@ impl Engine {
     }
 
     /// Update a peer's screen info (e.g. after they wake from sleep).
+    /// If focus is currently on this peer, update the live remote-mouse bounds
+    /// so the cursor is not trapped in stale dimensions (e.g. 1920×1080 fallback
+    /// after a macOS sleep/wake cycle on an ultrawide monitor).
     pub async fn update_peer_screens(&self, peer_id: &str, screens: Vec<crate::core::protocol::ScreenInfo>) {
         let mut peers = self.peers.lock().await;
         if let Some(peer) = peers.get_mut(peer_id) {
@@ -324,6 +327,19 @@ impl Engine {
                 screens.iter().map(|s| format!("{}x{}", s.width, s.height)).collect::<Vec<_>>()
             );
             peer.screens = screens;
+
+            // If we are currently controlling this peer, update the live remote
+            // bounds so the cursor is not clamped to the old resolution.
+            let focus = self.focus.lock().await;
+            if matches!(&*focus, FocusState::Remote(id) if id == peer_id) {
+                if let Some(s) = peer.screens.first() {
+                    crate::input::update_remote_bounds(s.x, s.y, s.width, s.height);
+                    crate::diag(format!(
+                        "Live-updated remote bounds for {}: {}x{} @ ({},{})",
+                        &peer_id[..peer_id.len().min(8)], s.width, s.height, s.x, s.y
+                    ));
+                }
+            }
         }
     }
 
