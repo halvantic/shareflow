@@ -75,14 +75,10 @@ pub async fn start_input_loop(
                             tokio::time::sleep(Duration::from_millis(150)).await;
                             if let Some(content) = clipboard::sync::get_clipboard_content() {
                                 log::debug!("Copy handler: broadcasting clipboard to peers");
+                                let msg = crate::core::protocol::clipboard_to_message(content);
                                 let peers = engine_clone.peers.lock().await;
                                 for peer in peers.values() {
-                                    let _ = peer
-                                        .sender
-                                        .send(Message::ClipboardUpdate {
-                                            content: content.clone(),
-                                        })
-                                        .await;
+                                    let _ = peer.sender_lo.send(msg.clone()).await;
                                 }
                             } else {
                                 log::debug!("Copy handler: clipboard has no syncable content (may be files)");
@@ -99,12 +95,8 @@ pub async fn start_input_loop(
                         // Before forwarding Ctrl+V to the remote machine, push our local
                         // clipboard so the remote pastes our content instead of its own.
                         if let Some(content) = clipboard::sync::get_clipboard_content() {
-                            let _ = engine
-                                .send_to_peer(
-                                    peer_id,
-                                    Message::ClipboardUpdate { content },
-                                )
-                                .await;
+                            let msg = crate::core::protocol::clipboard_to_message(content);
+                            let _ = engine.send_to_peer_lo(peer_id, msg).await;
                         }
                     }
                 }
@@ -243,20 +235,12 @@ pub async fn start_clipboard_sync(
 
         if let Some(content) = clipboard::sync::poll_clipboard_change(&mut last_known) {
             log::debug!("Clipboard changed, broadcasting to peers");
-            // Mark that we are pushing a locally-originated clipboard so that any
-            // echo back from the peer (e.g. Snipping Tool screenshot bounced back as
-            // a stripped arboard copy) is ignored for a short protection window.
-            // Broadcast to all connected peers regardless of focus state.
-            // This ensures that whichever machine you're currently controlling always
-            // has your latest clipboard content available for pasting.
+            // Compress images and send via lo-priority channel so mouse/key
+            // events are never blocked by large clipboard payloads.
+            let msg = crate::core::protocol::clipboard_to_message(content);
             let peers = engine.peers.lock().await;
             for peer in peers.values() {
-                let _ = peer
-                    .sender
-                    .send(Message::ClipboardUpdate {
-                        content: content.clone(),
-                    })
-                    .await;
+                let _ = peer.sender_lo.send(msg.clone()).await;
             }
         }
     }

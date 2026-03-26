@@ -21,7 +21,10 @@ pub struct Peer {
     pub id: PeerId,
     pub name: String,
     pub screens: Vec<ScreenInfo>,
+    /// High-priority channel: mouse, key, focus, ping/pong.
     pub sender: mpsc::Sender<Message>,
+    /// Low-priority channel: clipboard, files, screen updates, config.
+    pub sender_lo: mpsc::Sender<Message>,
 }
 
 /// The core engine that manages focus switching and input routing.
@@ -260,12 +263,10 @@ impl Engine {
         // Push our local clipboard to the remote peer immediately so that Ctrl+V
         // on the remote machine uses our clipboard content rather than its own.
         if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
+            let msg = crate::core::protocol::clipboard_to_message(content);
             let peers = self.peers.lock().await;
             if let Some(peer) = peers.get(peer_id) {
-                let _ = peer
-                    .sender
-                    .send(Message::ClipboardUpdate { content })
-                    .await;
+                let _ = peer.sender_lo.send(msg).await;
             }
         }
 
@@ -355,7 +356,7 @@ impl Engine {
         let msg = Message::ScreenUpdate { screens };
         let peers = self.peers.lock().await;
         for peer in peers.values() {
-            let _ = peer.sender.send(msg.clone()).await;
+            let _ = peer.sender_lo.send(msg.clone()).await;
         }
     }
 
@@ -384,7 +385,7 @@ impl Engine {
             .await;
     }
 
-    /// Send a message to a specific peer.
+    /// Send a high-priority message to a specific peer (mouse, key, focus).
     pub async fn send_to_peer(&self, peer_id: &str, msg: Message) -> Result<(), String> {
         let peers = self.peers.lock().await;
         if let Some(peer) = peers.get(peer_id) {
@@ -392,6 +393,19 @@ impl Engine {
                 .send(msg)
                 .await
                 .map_err(|e| format!("Failed to send to peer {}: {}", peer_id, e))
+        } else {
+            Err(format!("Peer not found: {}", peer_id))
+        }
+    }
+
+    /// Send a low-priority message to a specific peer (clipboard, files, config).
+    pub async fn send_to_peer_lo(&self, peer_id: &str, msg: Message) -> Result<(), String> {
+        let peers = self.peers.lock().await;
+        if let Some(peer) = peers.get(peer_id) {
+            peer.sender_lo
+                .send(msg)
+                .await
+                .map_err(|e| format!("Failed to send lo to peer {}: {}", peer_id, e))
         } else {
             Err(format!("Peer not found: {}", peer_id))
         }

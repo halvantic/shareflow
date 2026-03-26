@@ -119,20 +119,33 @@ async fn connect_to_peer_cmd(
             let _ = conn.outgoing.send(ack).await;
 
             let (msg_tx, mut msg_rx) = mpsc::channel(256);
+            let (msg_lo_tx, mut msg_lo_rx) = mpsc::channel(64);
             let peer = crate::core::engine::Peer {
                 id: peer_id.clone(),
                 name: name.clone(),
                 screens,
                 sender: msg_tx,
+                sender_lo: msg_lo_tx,
             };
             let result_name = name.clone();
             let result_id = peer_id.clone();
             state.engine.add_peer(peer).await;
 
+            // Forward hi-priority messages to connection.
             let conn_outgoing = conn.outgoing.clone();
             tokio::spawn(async move {
                 while let Some(msg) = msg_rx.recv().await {
                     if conn_outgoing.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Forward lo-priority messages to connection.
+            let conn_outgoing_lo = conn.outgoing_lo.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = msg_lo_rx.recv().await {
+                    if conn_outgoing_lo.send(msg).await.is_err() {
                         break;
                     }
                 }
@@ -149,7 +162,6 @@ async fn connect_to_peer_cmd(
                                 continue;
                             }
                             let _ = injector.move_mouse(mv.x, mv.y);
-                            // Check if the injected position hits a local edge for switching back.
                             let edge_event = crate::input::InputEvent::MouseMove(mv);
                             if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
                                 if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
@@ -195,6 +207,14 @@ async fn connect_to_peer_cmd(
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
                             if engine.config.lock().await.clipboard_sync_enabled {
                                 crate::clipboard::sync::apply_remote_clipboard(content);
+                            }
+                        }
+                        crate::core::protocol::Message::ClipboardUpdateCompressed { width, height, compressed_rgba, original_len } => {
+                            if engine.config.lock().await.clipboard_sync_enabled {
+                                match crate::core::protocol::decompress_clipboard(width, height, compressed_rgba, original_len) {
+                                    Ok(content) => crate::clipboard::sync::apply_remote_clipboard(content),
+                                    Err(e) => log::error!("Failed to decompress clipboard: {}", e),
+                                }
                             }
                         }
                         crate::core::protocol::Message::ScreenUpdate { screens } => {
@@ -433,7 +453,7 @@ async fn update_settings(
         drop(config);
         let peers = state.engine.peers.lock().await;
         for peer in peers.values() {
-            let _ = peer.sender.send(sync.clone()).await;
+            let _ = peer.sender_lo.send(sync.clone()).await;
         }
     }
 
@@ -744,20 +764,33 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
             let _ = conn.outgoing.send(ack).await;
 
             let (msg_tx, mut msg_rx) = mpsc::channel(256);
+            let (msg_lo_tx, mut msg_lo_rx) = mpsc::channel(64);
             let peer = crate::core::engine::Peer {
                 id: peer_id.clone(),
                 name: name.clone(),
                 screens,
                 sender: msg_tx,
+                sender_lo: msg_lo_tx,
             };
             let result_name = name.clone();
             let result_id = peer_id.clone();
             engine.add_peer(peer).await;
 
+            // Forward hi-priority messages to connection.
             let conn_outgoing = conn.outgoing.clone();
             tokio::spawn(async move {
                 while let Some(msg) = msg_rx.recv().await {
                     if conn_outgoing.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Forward lo-priority messages to connection.
+            let conn_outgoing_lo = conn.outgoing_lo.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = msg_lo_rx.recv().await {
+                    if conn_outgoing_lo.send(msg).await.is_err() {
                         break;
                     }
                 }
@@ -812,6 +845,14 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                         crate::core::protocol::Message::ClipboardUpdate { content } => {
                             if engine2.config.lock().await.clipboard_sync_enabled {
                                 crate::clipboard::sync::apply_remote_clipboard(content);
+                            }
+                        }
+                        crate::core::protocol::Message::ClipboardUpdateCompressed { width, height, compressed_rgba, original_len } => {
+                            if engine2.config.lock().await.clipboard_sync_enabled {
+                                match crate::core::protocol::decompress_clipboard(width, height, compressed_rgba, original_len) {
+                                    Ok(content) => crate::clipboard::sync::apply_remote_clipboard(content),
+                                    Err(e) => log::error!("Failed to decompress clipboard: {}", e),
+                                }
                             }
                         }
                         crate::core::protocol::Message::ScreenUpdate { screens } => {

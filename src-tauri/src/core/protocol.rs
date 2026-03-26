@@ -47,6 +47,17 @@ pub enum Message {
     /// Clipboard content changed on the active machine.
     ClipboardUpdate { content: ClipboardContent },
 
+    /// Clipboard image with LZ4-compressed RGBA payload.
+    /// Sent instead of ClipboardUpdate for images to reduce wire size.
+    ClipboardUpdateCompressed {
+        width: usize,
+        height: usize,
+        /// LZ4-compressed RGBA bytes.
+        compressed_rgba: Vec<u8>,
+        /// Original uncompressed length (needed for decompression).
+        original_len: usize,
+    },
+
     /// File transfer: start a new transfer.
     FileStart {
         transfer_id: String,
@@ -181,4 +192,39 @@ pub fn decode_message(buf: &[u8]) -> Result<Option<(Message, usize)>, String> {
     }
     let msg = bincode::deserialize(&buf[4..4 + len]).map_err(|e| e.to_string())?;
     Ok(Some((msg, 4 + len)))
+}
+
+/// Wrap a ClipboardContent into the appropriate Message, compressing images
+/// with LZ4 to dramatically reduce wire size (4K RGBA ~33 MB → ~1-3 MB).
+pub fn clipboard_to_message(content: ClipboardContent) -> Message {
+    match content {
+        ClipboardContent::Text(_) => Message::ClipboardUpdate { content },
+        ClipboardContent::Image { width, height, rgba } => {
+            let original_len = rgba.len();
+            let compressed_rgba = lz4_flex::compress_prepend_size(&rgba);
+            log::debug!(
+                "Clipboard image {}x{}: {} → {} bytes ({:.0}% reduction)",
+                width, height, original_len, compressed_rgba.len(),
+                (1.0 - compressed_rgba.len() as f64 / original_len as f64) * 100.0
+            );
+            Message::ClipboardUpdateCompressed {
+                width,
+                height,
+                compressed_rgba,
+                original_len,
+            }
+        }
+    }
+}
+
+/// Decompress a ClipboardUpdateCompressed back into ClipboardContent.
+pub fn decompress_clipboard(
+    width: usize,
+    height: usize,
+    compressed_rgba: Vec<u8>,
+    _original_len: usize,
+) -> Result<ClipboardContent, String> {
+    let rgba = lz4_flex::decompress_size_prepended(&compressed_rgba)
+        .map_err(|e| format!("LZ4 decompression failed: {}", e))?;
+    Ok(ClipboardContent::Image { width, height, rgba })
 }

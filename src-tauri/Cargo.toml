@@ -1,6 +1,6 @@
 [package]
 name = "shareflow"
-version = "1.38.0"
+version = "1.39.0"
 description = "Share keyboard and mouse between multiple PCs"
 authors = ["you"]
 edition = "2021"
@@ -31,6 +31,7 @@ arboard = { version = "3", features = ["image-data"] }
 base64 = "0.22"
 local-ip-address = "0.6"
 sha2 = "0.10"
+lz4_flex = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

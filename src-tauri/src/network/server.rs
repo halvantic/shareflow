@@ -76,7 +76,7 @@ async fn handle_peer_session(
 ) {
     let screens = get_screens();
 
-    // Send Hello
+    // Send Hello (handshake — hi-priority is fine)
     let hello = Message::Hello {
         peer_id: our_peer_id.clone(),
         name: our_name.clone(),
@@ -120,13 +120,15 @@ async fn handle_peer_session(
         remote_screens.len()
     );
 
-    // Register the peer in the engine.
+    // Register the peer in the engine with dual channels.
     let (msg_tx, mut msg_rx) = mpsc::channel(256);
+    let (msg_lo_tx, mut msg_lo_rx) = mpsc::channel(64);
     let peer = crate::core::engine::Peer {
         id: remote_peer_id.clone(),
         name: remote_name,
         screens: remote_screens,
         sender: msg_tx,
+        sender_lo: msg_lo_tx,
     };
     engine.add_peer(peer).await;
 
@@ -139,15 +141,25 @@ async fn handle_peer_session(
                 clipboard_sync_enabled: cfg.clipboard_sync_enabled,
             };
             drop(cfg);
-            let _ = engine.send_to_peer(&remote_peer_id, sync).await;
+            let _ = engine.send_to_peer_lo(&remote_peer_id, sync).await;
         }
     }
 
-    // Forward outgoing messages from engine to connection.
-    let outgoing = conn.outgoing.clone();
+    // Forward hi-priority outgoing messages from engine to connection.
+    let outgoing_hi = conn.outgoing.clone();
     tokio::spawn(async move {
         while let Some(msg) = msg_rx.recv().await {
-            if outgoing.send(msg).await.is_err() {
+            if outgoing_hi.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Forward lo-priority outgoing messages from engine to connection.
+    let outgoing_lo = conn.outgoing_lo.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = msg_lo_rx.recv().await {
+            if outgoing_lo.send(msg).await.is_err() {
                 break;
             }
         }
@@ -185,9 +197,6 @@ async fn handle_peer_session(
                 // Only inject received input when we have local focus (being
                 // controlled by the remote peer). If focus is Remote, these
                 // are stale in-flight events that arrived after an edge switch.
-                // Without this guard, they get forwarded back via
-                // handle_local_input's Remote branch, creating a feedback loop
-                // of bouncing coordinates between the two machines.
                 if engine.get_focus().await != FocusState::Local {
                     continue;
                 }
@@ -279,6 +288,12 @@ async fn handle_peer_session(
             }
             Message::ClipboardUpdate { content } => {
                 crate::clipboard::sync::apply_remote_clipboard(content);
+            }
+            Message::ClipboardUpdateCompressed { width, height, compressed_rgba, original_len } => {
+                match crate::core::protocol::decompress_clipboard(width, height, compressed_rgba, original_len) {
+                    Ok(content) => crate::clipboard::sync::apply_remote_clipboard(content),
+                    Err(e) => log::error!("Failed to decompress clipboard: {}", e),
+                }
             }
             Message::ConfigSync { clipboard_sync_enabled } => {
                 // Only agents apply host-pushed settings; hosts ignore this.

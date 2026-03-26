@@ -28,7 +28,7 @@ pub async fn send_file(
 
     // Send FileStart
     engine
-        .send_to_peer(
+        .send_to_peer_lo(
             peer_id,
             Message::FileStart {
                 transfer_id: transfer_id.clone(),
@@ -64,7 +64,7 @@ pub async fn send_file(
         }
 
         engine
-            .send_to_peer(
+            .send_to_peer_lo(
                 peer_id,
                 Message::FileChunk {
                     transfer_id: transfer_id.clone(),
@@ -90,7 +90,7 @@ pub async fn send_file(
 
     // Send FileDone
     engine
-        .send_to_peer(
+        .send_to_peer_lo(
             peer_id,
             Message::FileDone {
                 transfer_id: transfer_id.clone(),
