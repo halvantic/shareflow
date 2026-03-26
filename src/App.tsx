@@ -31,6 +31,7 @@ interface AppConfig {
   agent_mode: boolean;
   host_address: string;
   is_first_run: boolean;
+  preferred_ip: string;
   trusted_hosts: { peer_id: string; name: string }[];
   neighbors: { peer_id: string; edge: string; screen_id?: string }[];
   trusted_peers: any[];
@@ -96,6 +97,8 @@ function App() {
   const [settingsMachineName, setSettingsMachineName] = useState("");
   const [settingsIsPrimaryKm, setSettingsIsPrimaryKm] = useState(true);
   const [settingsClipboardEnabled, setSettingsClipboardEnabled] = useState(true);
+  const [settingsPreferredIp, setSettingsPreferredIp] = useState("");
+  const [networkInterfaces, setNetworkInterfaces] = useState<{ name: string; ip: string }[]>([]);
   // Setup wizard state
   const [isFirstRun, setIsFirstRun] = useState(false);
   const [wizardMode, setWizardMode] = useState<"host" | "agent">("host");
@@ -184,6 +187,11 @@ function App() {
       setSettingsMachineName(cfg.machine_name || "");
       setSettingsIsPrimaryKm(cfg.is_primary_km_device !== false);
       setSettingsClipboardEnabled(cfg.clipboard_sync_enabled !== false);
+      setSettingsPreferredIp(cfg.preferred_ip || "");
+      // Load available network interfaces for the NIC dropdown
+      invoke<{ name: string; ip: string }[]>("list_network_interfaces")
+        .then(setNetworkInterfaces)
+        .catch(() => {});
       if (cfg.is_first_run) {
         setIsFirstRun(true);
       }
@@ -402,6 +410,7 @@ function App() {
         machineName: settingsMachineName,
         isPrimaryKmDevice: settingsIsPrimaryKm,
         clipboardSyncEnabled: settingsClipboardEnabled,
+        preferredIp: settingsPreferredIp,
       });
       const cfg = await invoke<any>("get_config");
       setConfig(cfg);
@@ -893,6 +902,25 @@ function App() {
                 </label>
                 <span className="settings-hint">
                   Automatically sync clipboard content between this machine and connected peers. Disable if clipboard sync causes issues with local apps (e.g. screenshot tools).
+                </span>
+              </div>
+
+              <div className="settings-group">
+                <label className="settings-label">Network Interface</label>
+                <select
+                  value={settingsPreferredIp}
+                  onChange={(e) => setSettingsPreferredIp(e.target.value)}
+                  className="settings-input"
+                >
+                  <option value="">Auto-detect</option>
+                  {networkInterfaces.map((iface) => (
+                    <option key={`${iface.name}-${iface.ip}`} value={iface.ip}>
+                      {iface.name} — {iface.ip}
+                    </option>
+                  ))}
+                </select>
+                <span className="settings-hint">
+                  Choose which network interface to use for peer connections. Use this to force traffic over a direct-connect cable for lowest latency.
                 </span>
               </div>
 

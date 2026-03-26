@@ -79,6 +79,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub host_address: String,
 
+    /// Preferred network interface IP address (e.g. "10.0.0.1").
+    /// When set, discovery announcements and `get_local_ip` report this IP
+    /// instead of the OS-chosen default. Empty string = auto-detect.
+    #[serde(default)]
+    pub preferred_ip: String,
+
     /// True only on the very first launch (config file did not exist).
     /// The setup wizard sets this to false once the user completes it.
     /// Existing installs deserialise this as false (field absent → default),
@@ -117,6 +123,7 @@ impl Default for AppConfig {
             clipboard_sync_enabled: true,
             agent_mode: false,
             host_address: String::new(),
+            preferred_ip: String::new(),
             is_first_run: false, // used as serde fallback for existing configs
         }
     }

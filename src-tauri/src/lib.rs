@@ -269,10 +269,41 @@ async fn connect_to_peer_cmd(
 }
 
 #[tauri::command]
-fn get_local_ip() -> Result<String, String> {
+async fn get_local_ip(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let preferred = state.engine.config.lock().await.preferred_ip.clone();
+    if !preferred.is_empty() {
+        // Validate the preferred IP still exists on a local interface.
+        if let Ok(ifas) = local_ip_address::list_afinet_netifas() {
+            if ifas.iter().any(|(_, ip)| ip.to_string() == preferred) {
+                return Ok(preferred);
+            }
+            log::warn!("Preferred IP {} no longer present on any interface, falling back", preferred);
+        }
+    }
     local_ip_address::local_ip()
         .map(|ip| ip.to_string())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_network_interfaces() -> Result<Vec<serde_json::Value>, String> {
+    let ifas = local_ip_address::list_afinet_netifas()
+        .map_err(|e| e.to_string())?;
+    let mut result: Vec<serde_json::Value> = ifas
+        .into_iter()
+        .filter(|(_, ip)| ip.is_ipv4()) // only IPv4 for simplicity
+        .map(|(name, ip)| {
+            serde_json::json!({
+                "name": name,
+                "ip": ip.to_string(),
+            })
+        })
+        .collect();
+    // Sort by interface name for stable ordering
+    result.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+    Ok(result)
 }
 
 #[tauri::command]
@@ -431,6 +462,7 @@ async fn update_settings(
     machine_name: String,
     is_primary_km_device: bool,
     clipboard_sync_enabled: bool,
+    preferred_ip: Option<String>,
 ) -> Result<(), String> {
     let mut config = state.engine.config.lock().await;
     config.port = port;
@@ -439,6 +471,9 @@ async fn update_settings(
     // Agents are always non-primary — ignore any value passed in.
     config.is_primary_km_device = if config.agent_mode { false } else { is_primary_km_device };
     config.clipboard_sync_enabled = clipboard_sync_enabled;
+    if let Some(ip) = preferred_ip {
+        config.preferred_ip = ip;
+    }
     if !machine_name.is_empty() {
         config.machine_name = machine_name;
     }
@@ -1018,6 +1053,7 @@ pub fn run() {
             get_screens_info,
             connect_to_peer_cmd,
             get_local_ip,
+            list_network_interfaces,
             get_peers,
             get_focus_state,
             switch_focus_to,
