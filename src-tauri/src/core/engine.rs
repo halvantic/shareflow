@@ -118,12 +118,21 @@ impl Engine {
                         // where another thread could change focus between check and switch.
                         if let Some((ref peer_id, ref msg)) = result {
                             if let Message::SwitchFocus { entry_x, entry_y, .. } = msg {
-                                // Update focus state BEFORE releasing lock
-                                *focus = FocusState::Remote(peer_id.to_string());
-                                drop(focus); // Now safe to drop
-
-                                // Perform the switch operations with focus already updated
-                                self.switch_to_remote_unlocked(peer_id, *entry_x, *entry_y).await;
+                                if self.primary_km.load(Ordering::Relaxed) {
+                                    // Primary K+M device: switch to Remote to capture
+                                    // and forward physical input to the target peer.
+                                    *focus = FocusState::Remote(peer_id.to_string());
+                                    drop(focus);
+                                    self.switch_to_remote_unlocked(peer_id, *entry_x, *entry_y).await;
+                                } else {
+                                    // Non-primary device (agent): return the SwitchFocus
+                                    // so the peer regains focus, but stay Local. Agents
+                                    // have no physical input to forward and would get
+                                    // permanently stuck in Remote with suppression on.
+                                    drop(focus);
+                                    *self.last_switch_time.lock().await =
+                                        Some(std::time::Instant::now());
+                                }
                             }
                         }
                     }
