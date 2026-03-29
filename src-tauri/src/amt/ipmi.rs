@@ -22,27 +22,24 @@ impl AmtController {
 
     /// Send power-on command to the AMT device via IPMI
     pub async fn power_on(&self) -> Result<String, String> {
-        // Validate host
         let addr = format!("{}:{}", self.host, self.port);
+        log::info!("AMT: Attempting power-on at {}:{}", self.host, self.port);
 
         // Create a UDP socket
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| format!("Failed to create socket: {}", e))?;
 
-        // Test connection first
-        match socket.send_to(&[0], &addr).await {
-            Ok(_) => {},
-            Err(e) => {
-                return Err(format!(
-                    "Failed to connect to {}:{}: {}",
-                    self.host, self.port, e
-                ));
-            }
+        // Test connectivity with probe
+        log::info!("AMT: Testing connectivity...");
+        match timeout(Duration::from_secs(2), socket.send_to(&[0x06, 0x00, 0xff, 0x07], &addr)).await {
+            Ok(Ok(_)) => log::info!("AMT: Probe sent"),
+            Ok(Err(e)) => return Err(format!("Failed to send probe to {}: {}", addr, e)),
+            Err(_) => return Err(format!("Probe send timeout to {}", addr)),
         }
 
-        // IPMI Open Session Request (simplified)
-        // This creates an IPMI v2.0 session
+        // IPMI Open Session Request (v2.0)
+        log::info!("AMT: Sending open session request");
         let open_session_req = build_open_session_request();
 
         socket
@@ -51,10 +48,30 @@ impl AmtController {
             .map_err(|e| format!("Failed to send open session request: {}", e))?;
 
         let mut buf = vec![0u8; 1024];
-        let (n, _) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
-            .await
-            .map_err(|_| "Open session response timeout".to_string())?
-            .map_err(|e| format!("Failed to receive open session response: {}", e))?;
+        log::info!("AMT: Waiting for open session response (5s timeout)...");
+        let (n, _) = match timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await {
+            Ok(Ok((n, _))) => {
+                log::info!("AMT: Received open session response ({} bytes)", n);
+                (n, ())
+            }
+            Ok(Err(e)) => {
+                log::error!("AMT: Socket error: {}", e);
+                return Err(format!("Socket error: {}", e));
+            }
+            Err(_) => {
+                log::error!("AMT: No response from device - check:");
+                log::error!("  - Device IP: {}", self.host);
+                log::error!("  - Device Port: {}", self.port);
+                log::error!("  - Is IPMI enabled on device?");
+                log::error!("  - Is firewall blocking UDP on that port?");
+                log::error!("  - Try alternate ports: 16992, 16993 for Intel AMT HTTP/HTTPS");
+                return Err(format!(
+                    "Device {}:{} not responding. Verify IP, port, and IPMI is enabled. \
+                    For Intel AMT, try ports 16992 (HTTP) or 16993 (HTTPS) instead of 623.",
+                    self.host, self.port
+                ));
+            }
+        };
 
         let open_session_resp = &buf[..n];
 
