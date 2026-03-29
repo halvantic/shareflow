@@ -29,6 +29,10 @@ const HELD_RIGHT: u8 = 0x02;
 const HELD_OTHER: u8 = 0x04;
 
 /// Remote screen bounds for clamping virtual position.
+/// Initialized with fallback defaults (1920x1080) but updated via update_remote_bounds()
+/// when a peer connects with actual screen info.
+/// On macOS, the engine detects when the local Mac wakes from sleep and broadcasts
+/// updated screen info to peers, which calls update_remote_bounds() with correct values.
 static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
