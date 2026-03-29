@@ -671,8 +671,17 @@ async fn update_tray(app: &AppHandle<Wry>) {
         }
     };
     drop(peers);
+
+    // Get AMT computers from config
+    let config = state.engine.config.lock().await;
+    let amt_computers: Vec<(String, String)> = config.amt_computers
+        .iter()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .collect();
+    drop(config);
+
     if let Some(tray) = app.tray_by_id("main") {
-        if let Ok(menu) = build_tray_menu(app, &peer_names, &focus) {
+        if let Ok(menu) = build_tray_menu(app, &peer_names, &focus, &amt_computers) {
             let _ = tray.set_menu(Some(menu));
         }
         let _ = tray.set_tooltip(Some(&tooltip));
@@ -684,6 +693,7 @@ fn build_tray_menu(
     app: &AppHandle<Wry>,
     peer_names: &[(String, String)], // (peer_id, name)
     focus: &FocusState,
+    amt_computers: &[(String, String)], // (id, name)
 ) -> Result<tauri::menu::Menu<Wry>, Box<dyn std::error::Error>> {
     let status_text = match focus {
         FocusState::Local => format!("Status: Local | {} peer(s)", peer_names.len()),
@@ -728,6 +738,20 @@ fn build_tray_menu(
         builder = builder.item(&no_peers);
     }
 
+    // Add AMT power control items
+    if !amt_computers.is_empty() {
+        let separator_amt = tauri::menu::PredefinedMenuItem::separator(app)?;
+        builder = builder.item(&separator_amt);
+        for (comp_id, comp_name) in amt_computers {
+            let label = format!("Power On: {}", comp_name);
+            let item = MenuItemBuilder::with_id(
+                &format!("amt_power_on_{}", comp_id),
+                &label,
+            ).build(app)?;
+            builder = builder.item(&item);
+        }
+    }
+
     let separator3 = tauri::menu::PredefinedMenuItem::separator(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit ShareFlow").build(app)?;
     builder = builder.items(&[&separator3, &quit]);
@@ -736,7 +760,7 @@ fn build_tray_menu(
 }
 
 fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
-    let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local)?;
+    let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local, &[])?;
 
     let app_handle = app.handle().clone();
     let _tray = TrayIconBuilder::with_id("main")
@@ -791,6 +815,40 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
                                     drop(peers);
                                     engine.switch_to_remote(&peer_id, ex, ey).await;
                                 }
+                            }
+                        });
+                    }
+                }
+                _ if id.starts_with("amt_power_on_") => {
+                    let amt_id = id.strip_prefix("amt_power_on_").unwrap_or(&id).to_string();
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let engine = state.engine.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let config = engine.config.lock().await;
+                            let computer = config
+                                .amt_computers
+                                .iter()
+                                .find(|c| c.id == amt_id)
+                                .cloned();
+                            drop(config);
+
+                            if let Some(computer) = computer {
+                                let controller = amt::AmtController::new(
+                                    computer.host.clone(),
+                                    computer.port,
+                                    computer.username.clone(),
+                                    computer.password.clone(),
+                                );
+                                match controller.power_on().await {
+                                    Ok(msg) => {
+                                        log::info!("AMT: Power-on from tray successful: {}", msg);
+                                    }
+                                    Err(e) => {
+                                        log::error!("AMT: Power-on from tray failed: {}", e);
+                                    }
+                                }
+                            } else {
+                                log::warn!("AMT: Computer with id {} not found", amt_id);
                             }
                         });
                     }

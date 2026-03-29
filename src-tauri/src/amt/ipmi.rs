@@ -150,8 +150,17 @@ fn compute_digest_auth(
     let opaque = extract_digest_param(www_auth, "opaque");
     let qop = extract_digest_param(www_auth, "qop");
 
-    // Extract uri path (without domain)
-    let uri_path = uri.split("://").nth(1).and_then(|s| s.split("/").nth(1)).unwrap_or(uri);
+    // Extract uri path (e.g., "/wsman" from "http://10.0.80.10:16992/wsman")
+    let uri_path = if let Some(after_host) = uri.split("://").nth(1) {
+        // Skip past the host:port to get /path
+        if let Some(slash_pos) = after_host.find('/') {
+            &after_host[slash_pos..]
+        } else {
+            "/"
+        }
+    } else {
+        uri
+    };
 
     // Compute HA1: MD5(username:realm:password)
     let ha1_input = format!("{}:{}:{}", username, realm, password);
