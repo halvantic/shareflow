@@ -1,8 +1,8 @@
+/// WS-Management (WSMAN) Power Control for Intel AMT
+/// Uses HTTP Digest Auth to connect to Intel AMT port 16992
+use reqwest::Client;
 use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio::time::timeout;
 
-/// IPMI Power Control via UDP (for Intel AMT/vPro devices)
 pub struct AmtController {
     host: String,
     port: u16,
@@ -20,252 +20,229 @@ impl AmtController {
         }
     }
 
-    /// Send power-on command to the AMT device via IPMI
+    /// Power on the AMT device via WS-Management with Digest Auth
     pub async fn power_on(&self) -> Result<String, String> {
-        let addr = format!("{}:{}", self.host, self.port);
-        log::info!("AMT: Attempting power-on at {}:{}", self.host, self.port);
+        let url = format!("http://{}:{}/wsman", self.host, self.port);
+        log::info!("AMT: Sending power-on to {}", url);
 
-        // Create a UDP socket
-        let socket = UdpSocket::bind("0.0.0.0:0")
+        let body = build_wsman_power_on_request(&url);
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        // First request to get auth challenge
+        log::debug!("AMT: Sending initial request to get digest challenge");
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/soap+xml;charset=UTF-8")
+            .body(body.clone())
+            .send()
             .await
-            .map_err(|e| format!("Failed to create socket: {}", e))?;
+            .map_err(|e| {
+                log::error!("AMT: Connection failed: {}", e);
+                format!("Failed to connect to {}: {}", url, e)
+            })?;
 
-        // Test connectivity with probe
-        log::info!("AMT: Testing connectivity...");
-        match timeout(Duration::from_secs(2), socket.send_to(&[0x06, 0x00, 0xff, 0x07], &addr)).await {
-            Ok(Ok(_)) => log::info!("AMT: Probe sent"),
-            Ok(Err(e)) => return Err(format!("Failed to send probe to {}: {}", addr, e)),
-            Err(_) => return Err(format!("Probe send timeout to {}", addr)),
-        }
+        let status = response.status();
 
-        // IPMI Open Session Request (v2.0)
-        log::info!("AMT: Sending open session request");
-        let open_session_req = build_open_session_request();
+        // Handle 401 Unauthorized (digest challenge)
+        if status.as_u16() == 401 {
+            log::info!("AMT: Received 401 challenge, computing digest auth");
 
-        socket
-            .send_to(&open_session_req, &addr)
-            .await
-            .map_err(|e| format!("Failed to send open session request: {}", e))?;
+            // Extract WWW-Authenticate header
+            let auth_header = match response.headers().get("www-authenticate") {
+                Some(h) => h.to_str().unwrap_or(""),
+                None => {
+                    log::error!("AMT: No WWW-Authenticate header in 401 response");
+                    return Err("Device returned 401 but no auth challenge".to_string());
+                }
+            };
 
-        let mut buf = vec![0u8; 1024];
-        log::info!("AMT: Waiting for open session response (5s timeout)...");
-        let (n, _) = match timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _))) => {
-                log::info!("AMT: Received open session response ({} bytes)", n);
-                (n, ())
+            log::debug!("AMT: Auth challenge: {}", auth_header);
+
+            // Parse digest challenge and compute response
+            match compute_digest_auth(
+                &self.username,
+                &self.password,
+                "POST",
+                &url,
+                auth_header,
+            ) {
+                Ok(auth_header) => {
+                    log::debug!("AMT: Sending authenticated request");
+
+                    // Second request with digest auth
+                    let response = client
+                        .post(&url)
+                        .header("Content-Type", "application/soap+xml;charset=UTF-8")
+                        .header("Authorization", auth_header)
+                        .body(body)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            log::error!("AMT: Authenticated request failed: {}", e);
+                            format!("Authenticated request failed: {}", e)
+                        })?;
+
+                    let status = response.status();
+                    let body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unable to read response".to_string());
+
+                    log::info!("AMT: Response status: {}", status);
+                    log::debug!("AMT: Response: {}", &body_text[..body_text.len().min(300)]);
+
+                    if status.is_success() {
+                        log::info!("AMT: Power-on command successful");
+                        Ok("Power-on command sent successfully".to_string())
+                    } else {
+                        log::error!("AMT: Request failed with status {}", status);
+                        Err(format!("Request failed (status {})", status))
+                    }
+                }
+                Err(e) => {
+                    log::error!("AMT: Failed to compute digest auth: {}", e);
+                    Err(format!("Authentication computation failed: {}", e))
+                }
             }
-            Ok(Err(e)) => {
-                log::error!("AMT: Socket error: {}", e);
-                return Err(format!("Socket error: {}", e));
-            }
-            Err(_) => {
-                log::error!("AMT: No response from device - check:");
-                log::error!("  - Device IP: {}", self.host);
-                log::error!("  - Device Port: {}", self.port);
-                log::error!("  - Is IPMI enabled on device?");
-                log::error!("  - Is firewall blocking UDP on that port?");
-                log::error!("  - Try alternate ports: 16992, 16993 for Intel AMT HTTP/HTTPS");
-                return Err(format!(
-                    "Device {}:{} not responding. Verify IP, port, and IPMI is enabled. \
-                    For Intel AMT, try ports 16992 (HTTP) or 16993 (HTTPS) instead of 623.",
-                    self.host, self.port
-                ));
-            }
-        };
-
-        let open_session_resp = &buf[..n];
-
-        // Parse session ID and challenge token from response
-        let (session_id, challenge_token) =
-            parse_open_session_response(open_session_resp)
-                .map_err(|e| format!("Failed to parse session response: {}", e))?;
-
-        // IPMI RAKP1 (authentication) Request
-        let rakp1_req =
-            build_rakp1_request(&self.username, &challenge_token, session_id);
-
-        socket
-            .send_to(&rakp1_req, &addr)
-            .await
-            .map_err(|e| format!("Failed to send RAKP1 request: {}", e))?;
-
-        let (n, _) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
-            .await
-            .map_err(|_| "RAKP1 response timeout".to_string())?
-            .map_err(|e| format!("Failed to receive RAKP1 response: {}", e))?;
-
-        let rakp1_resp = &buf[..n];
-
-        // Parse RAKP1 response
-        let server_challenge =
-            parse_rakp1_response(rakp1_resp)
-                .map_err(|e| format!("Failed to parse RAKP1 response: {}", e))?;
-
-        // IPMI RAKP3 (authentication) Request
-        let rakp3_req = build_rakp3_request(&self.password, &server_challenge, session_id);
-
-        socket
-            .send_to(&rakp3_req, &addr)
-            .await
-            .map_err(|e| format!("Failed to send RAKP3 request: {}", e))?;
-
-        let (n, _) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
-            .await
-            .map_err(|_| "RAKP3 response timeout".to_string())?
-            .map_err(|e| format!("Failed to receive RAKP3 response: {}", e))?;
-
-        // Session should now be established - send power-on command
-        let power_on_req = build_power_on_request(session_id);
-
-        socket
-            .send_to(&power_on_req, &addr)
-            .await
-            .map_err(|e| format!("Failed to send power-on command: {}", e))?;
-
-        let (n, _) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
-            .await
-            .map_err(|_| "Power-on response timeout".to_string())?
-            .map_err(|e| format!("Failed to receive power-on response: {}", e))?;
-
-        let power_on_resp = &buf[..n];
-
-        // Check response for success
-        if check_power_on_success(power_on_resp) {
-            Ok("Successfully powered on".to_string())
         } else {
-            Err("Power-on command failed - check device status".to_string())
+            // No auth required or different auth method
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response".to_string());
+
+            log::info!("AMT: Response status: {}", status);
+            log::debug!("AMT: Response: {}", &body_text[..body_text.len().min(300)]);
+
+            if status.is_success() {
+                log::info!("AMT: Power-on successful");
+                Ok("Power-on command sent successfully".to_string())
+            } else {
+                log::error!("AMT: Request failed with status {}", status);
+                Err(format!(
+                    "Request failed (status {}). Check credentials and device configuration.",
+                    status
+                ))
+            }
         }
     }
 }
 
-// IPMI Protocol Builders
+/// Compute Digest Auth header for HTTP authentication
+fn compute_digest_auth(
+    username: &str,
+    password: &str,
+    method: &str,
+    uri: &str,
+    www_auth: &str,
+) -> Result<String, String> {
+    // Parse challenge from WWW-Authenticate header
+    // Format: Digest realm="...", domain="...", nonce="...", opaque="...", algorithm=MD5, qop="auth"
 
-fn build_open_session_request() -> Vec<u8> {
-    // IPMI Open Session Request (v2.0/IPMI 2.0)
-    vec![
-        0x06, 0x00, 0x01, 0x01, // Header + Open Session tag
-        0x00, 0x00, 0x00, 0x00, // Reserved
-        0x08, 0x04, 0x01, 0x00, // Authentication algorithm
-        0x01, 0x00, 0x00, 0x08, // Integrity algorithm
-        0x01, 0x00, 0x00, 0x00, // Confidentiality algorithm
-    ]
-}
+    let realm = extract_digest_param(www_auth, "realm")
+        .ok_or("Missing realm in auth challenge")?;
+    let nonce = extract_digest_param(www_auth, "nonce")
+        .ok_or("Missing nonce in auth challenge")?;
+    let opaque = extract_digest_param(www_auth, "opaque");
+    let qop = extract_digest_param(www_auth, "qop");
 
-fn parse_open_session_response(resp: &[u8]) -> Result<(u32, Vec<u8>), String> {
-    if resp.len() < 20 {
-        return Err("Invalid open session response".to_string());
-    }
+    // Extract uri path (without domain)
+    let uri_path = uri.split("://").nth(1).and_then(|s| s.split("/").nth(1)).unwrap_or(uri);
 
-    // Extract session ID from response
-    let session_id = u32::from_le_bytes([resp[8], resp[9], resp[10], resp[11]]);
+    // Compute HA1: MD5(username:realm:password)
+    let ha1_input = format!("{}:{}:{}", username, realm, password);
+    let ha1 = format!("{:x}", md5::compute(ha1_input.as_bytes()));
 
-    // Extract challenge token (server-generated challenge)
-    let challenge_len = if resp.len() > 20 { resp[19] as usize } else { 0 };
-    let challenge_token = if challenge_len > 0 && resp.len() >= 20 + challenge_len {
-        resp[20..20 + challenge_len].to_vec()
+    // Compute HA2: MD5(method:uri)
+    let ha2_input = format!("{}:{}", method, uri_path);
+    let ha2 = format!("{:x}", md5::compute(ha2_input.as_bytes()));
+
+    // Compute response: MD5(HA1:nonce:HA2)
+    // For qop=auth: MD5(HA1:nonce:nc:cnonce:qop:HA2)
+    let response = if qop.as_deref() == Some("auth") {
+        let nc = "00000001";
+        let cnonce = "0a4f113b";
+        let response_input = format!("{}:{}:{}:{}:auth:{}", ha1, nonce, nc, cnonce, ha2);
+        format!(
+            "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{:x}\", opaque=\"{}\", qop=auth, nc={}, cnonce=\"{}\"",
+            username, realm, nonce, uri_path,
+            md5::compute(response_input.as_bytes()),
+            opaque.unwrap_or_default(),
+            nc, cnonce
+        )
     } else {
-        vec![0; 16]
+        let response_input = format!("{}:{}:{}", ha1, nonce, ha2);
+        format!(
+            "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{:x}\"{}",
+            username, realm, nonce, uri_path,
+            md5::compute(response_input.as_bytes()),
+            if let Some(o) = opaque {
+                format!(", opaque=\"{}\"", o)
+            } else {
+                String::new()
+            }
+        )
     };
 
-    Ok((session_id, challenge_token))
+    log::debug!("AMT: Computed digest auth header");
+    Ok(response)
 }
 
-fn build_rakp1_request(username: &str, challenge_token: &[u8], session_id: u32) -> Vec<u8> {
-    let mut req = Vec::new();
-
-    // Header
-    req.push(0x06);
-    req.push(0x00);
-    req.push(0x02);
-    req.push(0x02); // RAKP1
-
-    // Session ID
-    req.extend_from_slice(&session_id.to_le_bytes());
-
-    // Challenge token
-    if !challenge_token.is_empty() {
-        req.extend_from_slice(challenge_token);
-    } else {
-        req.extend_from_slice(&[0u8; 16]);
+/// Extract parameter value from Digest auth challenge
+fn extract_digest_param(auth_header: &str, param: &str) -> Option<String> {
+    let pattern = format!("{}=\"", param);
+    if let Some(start) = auth_header.find(&pattern) {
+        let value_start = start + pattern.len();
+        if let Some(end) = auth_header[value_start..].find('"') {
+            return Some(auth_header[value_start..value_start + end].to_string());
+        }
     }
-
-    // Privilege level and username
-    req.push(0x04); // Admin privilege
-    req.push(0x00); // Reserved
-    req.push(username.len() as u8);
-    req.extend_from_slice(username.as_bytes());
-
-    req
+    None
 }
 
-fn parse_rakp1_response(resp: &[u8]) -> Result<Vec<u8>, String> {
-    if resp.len() < 20 {
-        return Err("Invalid RAKP1 response".to_string());
-    }
-
-    // Extract server challenge from response
-    let challenge_offset = 20;
-    let challenge_len = if resp.len() > challenge_offset {
-        16.min(resp.len() - challenge_offset)
-    } else {
-        16
-    };
-
-    Ok(resp[challenge_offset..challenge_offset + challenge_len].to_vec())
-}
-
-fn build_rakp3_request(password: &str, server_challenge: &[u8], session_id: u32) -> Vec<u8> {
-    let mut req = Vec::new();
-
-    // Header
-    req.push(0x06);
-    req.push(0x00);
-    req.push(0x03);
-    req.push(0x03); // RAKP3
-
-    // Session ID
-    req.extend_from_slice(&session_id.to_le_bytes());
-
-    // Server challenge hash (simplified - use password directly for demo)
-    // In production, this should be HMAC-SHA1 of challenge + password
-    req.extend_from_slice(server_challenge);
-
-    // Password (simplified)
-    req.push(password.len() as u8);
-    req.extend_from_slice(password.as_bytes());
-
-    req
-}
-
-fn build_power_on_request(session_id: u32) -> Vec<u8> {
-    vec![
-        0x06, 0x00, 0x01, 0x01, // Header
-        session_id as u8,
-        (session_id >> 8) as u8,
-        (session_id >> 16) as u8,
-        (session_id >> 24) as u8, // Session ID
-        0x01,
-        0x01,
-        0x00,
-        0x0c, // Chassis power up command
-        0x01,
-        0x00,
-        0x00,
-        0x00,
-    ]
-}
-
-fn check_power_on_success(resp: &[u8]) -> bool {
-    // Check if response indicates success
-    // Status code 0 = success
-    if resp.is_empty() {
-        return false;
-    }
-
-    // Simple check for completion code
-    if resp.len() > 8 {
-        return resp[8] == 0x00;
-    }
-
-    true
+fn build_wsman_power_on_request(url: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope
+  xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+  xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+  xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+  xmlns:pcs="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerManagementService">
+  <s:Header>
+    <wsa:Action>http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerManagementService/RequestPowerStateChange</wsa:Action>
+    <wsa:To>{}</wsa:To>
+    <wsman:ResourceURI>http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerManagementService</wsman:ResourceURI>
+    <wsa:MessageID>1</wsa:MessageID>
+    <wsa:ReplyTo>
+      <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+    </wsa:ReplyTo>
+    <wsman:SelectorSet>
+      <wsman:Selector Name="CreationClassName">CIM_PowerManagementService</wsman:Selector>
+      <wsman:Selector Name="Name">Intel(r) AMT Power Management Service</wsman:Selector>
+      <wsman:Selector Name="SystemCreationClassName">CIM_ComputerSystem</wsman:Selector>
+      <wsman:Selector Name="SystemName">Intel(r) AMT</wsman:Selector>
+    </wsman:SelectorSet>
+  </s:Header>
+  <s:Body>
+    <pcs:RequestPowerStateChange_INPUT>
+      <pcs:PowerState>2</pcs:PowerState>
+      <pcs:ManagedElement>
+        <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+        <wsa:ReferenceParameters>
+          <wsman:ResourceURI>http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ComputerSystem</wsman:ResourceURI>
+          <wsman:SelectorSet>
+            <wsman:Selector Name="CreationClassName">CIM_ComputerSystem</wsman:Selector>
+            <wsman:Selector Name="Name">ManagedSystem</wsman:Selector>
+          </wsman:SelectorSet>
+        </wsa:ReferenceParameters>
+      </pcs:ManagedElement>
+    </pcs:RequestPowerStateChange_INPUT>
+  </s:Body>
+</s:Envelope>"#,
+        url
+    )
 }

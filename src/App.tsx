@@ -103,7 +103,7 @@ function App() {
   const [amtComputers, setAmtComputers] = useState<Array<{ id: string; name: string; host: string; port: number; username: string; password: string }>>([]);
   const [newAmtName, setNewAmtName] = useState("");
   const [newAmtHost, setNewAmtHost] = useState("");
-  const [newAmtPort, setNewAmtPort] = useState("623");
+  const [newAmtPort, setNewAmtPort] = useState("16992");
   const [newAmtUsername, setNewAmtUsername] = useState("");
   const [newAmtPassword, setNewAmtPassword] = useState("");
   const [amtPoweringOn, setAmtPoweringOn] = useState<string | null>(null);
@@ -1040,10 +1040,10 @@ function App() {
                       type="text"
                       value={newAmtPort}
                       onChange={(e) => setNewAmtPort(e.target.value.replace(/\D/g, ""))}
-                      placeholder="623"
+                      placeholder="16992"
                       style={{ width: 100 }}
                     />
-                    <span className="settings-hint">Default: 623</span>
+                    <span className="settings-hint">Default Intel AMT: 16992 (HTTP) or 16993 (HTTPS)</span>
                   </div>
                   <div className="settings-group">
                     <label className="settings-label">Username</label>
