@@ -99,6 +99,14 @@ function App() {
   const [settingsClipboardEnabled, setSettingsClipboardEnabled] = useState(true);
   const [settingsPreferredIp, setSettingsPreferredIp] = useState("");
   const [networkInterfaces, setNetworkInterfaces] = useState<{ name: string; ip: string }[]>([]);
+  // AMT (Intel vPro) state
+  const [amtComputers, setAmtComputers] = useState<Array<{ id: string; name: string; host: string; port: number; username: string; password: string }>>([]);
+  const [newAmtName, setNewAmtName] = useState("");
+  const [newAmtHost, setNewAmtHost] = useState("");
+  const [newAmtPort, setNewAmtPort] = useState("623");
+  const [newAmtUsername, setNewAmtUsername] = useState("");
+  const [newAmtPassword, setNewAmtPassword] = useState("");
+  const [amtPoweringOn, setAmtPoweringOn] = useState<string | null>(null);
   // Setup wizard state
   const [isFirstRun, setIsFirstRun] = useState(false);
   const [wizardMode, setWizardMode] = useState<"host" | "agent">("host");
@@ -188,6 +196,10 @@ function App() {
       setSettingsIsPrimaryKm(cfg.is_primary_km_device !== false);
       setSettingsClipboardEnabled(cfg.clipboard_sync_enabled !== false);
       setSettingsPreferredIp(cfg.preferred_ip || "");
+      // Load AMT computers
+      if (cfg.amt_computers) {
+        setAmtComputers(cfg.amt_computers);
+      }
       // Load available network interfaces for the NIC dropdown
       invoke<{ name: string; ip: string }[]>("list_network_interfaces")
         .then(setNetworkInterfaces)
@@ -442,6 +454,66 @@ function App() {
       addLog("Removed from trusted hosts", "success");
     } catch (e: any) {
       addLog(`Failed to remove trusted host: ${e}`, "error");
+    }
+  };
+
+  const handleAddAmtComputer = async () => {
+    if (!newAmtName.trim() || !newAmtHost.trim() || !newAmtUsername.trim() || !newAmtPassword.trim()) {
+      addToast("All fields are required", "error");
+      return;
+    }
+    const port = parseInt(newAmtPort, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      addToast("Invalid port number", "error");
+      return;
+    }
+    try {
+      await invoke("add_amt_computer", {
+        name: newAmtName.trim(),
+        host: newAmtHost.trim(),
+        port,
+        username: newAmtUsername.trim(),
+        password: newAmtPassword.trim(),
+      });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      setAmtComputers(cfg.amt_computers || []);
+      setNewAmtName("");
+      setNewAmtHost("");
+      setNewAmtPort("623");
+      setNewAmtUsername("");
+      setNewAmtPassword("");
+      addToast("AMT computer added", "success");
+      addLog("Added AMT computer", "info");
+    } catch (e: any) {
+      addToast(`Failed to add AMT computer: ${e}`, "error");
+    }
+  };
+
+  const handleRemoveAmtComputer = async (id: string) => {
+    try {
+      await invoke("remove_amt_computer", { id });
+      const cfg = await invoke<any>("get_config");
+      setConfig(cfg);
+      setAmtComputers(cfg.amt_computers || []);
+      addToast("AMT computer removed", "success");
+      addLog("Removed AMT computer", "info");
+    } catch (e: any) {
+      addToast(`Failed to remove AMT computer: ${e}`, "error");
+    }
+  };
+
+  const handlePowerOnAmtComputer = async (id: string) => {
+    setAmtPoweringOn(id);
+    try {
+      const result = await invoke<string>("power_on_amt_computer", { id });
+      addToast(result, "success");
+      addLog(`Power on command sent: ${result}`, "info");
+    } catch (e: any) {
+      addToast(`Failed to power on: ${e}`, "error");
+      addLog(`Failed to power on AMT computer: ${e}`, "error");
+    } finally {
+      setAmtPoweringOn(null);
     }
   };
 
@@ -930,6 +1002,125 @@ function App() {
               <span className="settings-hint" style={{ marginLeft: 12 }}>
                 Port changes require app restart
               </span>
+
+              {/* Intel AMT - Remote Power Control */}
+              <div style={{ marginTop: 20, borderTop: "1px solid #0f3460", paddingTop: 20 }}>
+                <h3 style={{ fontSize: 14, color: "#e94560", marginBottom: 10 }}>
+                  Intel AMT - Remote Power Control
+                </h3>
+                <p className="settings-hint" style={{ marginBottom: 10 }}>
+                  Add vPro-enabled computers and power them on remotely via IPMI.
+                </p>
+
+                {/* Add New AMT Computer */}
+                <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid #0f3460" }}>
+                  <div className="settings-group">
+                    <label className="settings-label">Computer Name</label>
+                    <input
+                      type="text"
+                      value={newAmtName}
+                      onChange={(e) => setNewAmtName(e.target.value)}
+                      placeholder="e.g., Office PC"
+                      style={{ width: 220 }}
+                    />
+                  </div>
+                  <div className="settings-group">
+                    <label className="settings-label">AMT Host</label>
+                    <input
+                      type="text"
+                      value={newAmtHost}
+                      onChange={(e) => setNewAmtHost(e.target.value)}
+                      placeholder="192.168.1.100"
+                      style={{ width: 220 }}
+                    />
+                  </div>
+                  <div className="settings-group">
+                    <label className="settings-label">Port</label>
+                    <input
+                      type="text"
+                      value={newAmtPort}
+                      onChange={(e) => setNewAmtPort(e.target.value.replace(/\D/g, ""))}
+                      placeholder="623"
+                      style={{ width: 100 }}
+                    />
+                    <span className="settings-hint">Default: 623</span>
+                  </div>
+                  <div className="settings-group">
+                    <label className="settings-label">Username</label>
+                    <input
+                      type="text"
+                      value={newAmtUsername}
+                      onChange={(e) => setNewAmtUsername(e.target.value)}
+                      placeholder="admin"
+                      style={{ width: 220 }}
+                    />
+                  </div>
+                  <div className="settings-group">
+                    <label className="settings-label">Password</label>
+                    <input
+                      type="password"
+                      value={newAmtPassword}
+                      onChange={(e) => setNewAmtPassword(e.target.value)}
+                      placeholder="••••••••"
+                      style={{ width: 220 }}
+                    />
+                  </div>
+                  <button onClick={handleAddAmtComputer} style={{ marginTop: 8 }}>
+                    Add Computer
+                  </button>
+                </div>
+
+                {/* AMT Computers List */}
+                {amtComputers.length > 0 ? (
+                  <div className="amt-computers-list">
+                    {amtComputers.map((computer) => (
+                      <div key={computer.id} className="amt-computer-item" style={{
+                        padding: "12px",
+                        backgroundColor: "#161b22",
+                        border: "1px solid #0f3460",
+                        borderRadius: "4px",
+                        marginBottom: "8px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: "bold", color: "#e94560" }}>
+                            {computer.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#888" }}>
+                            {computer.host}:{computer.port}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button
+                            onClick={() => handlePowerOnAmtComputer(computer.id)}
+                            disabled={amtPoweringOn === computer.id}
+                            style={{
+                              fontSize: 10,
+                              padding: "3px 8px",
+                              backgroundColor: amtPoweringOn === computer.id ? "#666" : "#e94560",
+                              cursor: amtPoweringOn === computer.id ? "default" : "pointer",
+                              opacity: amtPoweringOn === computer.id ? 0.7 : 1,
+                            }}
+                          >
+                            {amtPoweringOn === computer.id ? "⏳ Powering..." : "Power On"}
+                          </button>
+                          <button
+                            className="secondary"
+                            onClick={() => handleRemoveAmtComputer(computer.id)}
+                            style={{ fontSize: 10, padding: "3px 8px" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#555" }}>No AMT computers configured.</div>
+                )}
+              </div>
 
               {/* Trusted Hosts */}
               <div style={{ marginTop: 20 }}>

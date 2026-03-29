@@ -27,6 +27,23 @@ pub struct TrustedHost {
     pub name: String,
 }
 
+/// An Intel AMT (vPro) computer for remote power control.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmtComputer {
+    /// Unique ID for this AMT computer (UUID).
+    pub id: String,
+    /// Display name for this computer.
+    pub name: String,
+    /// IP address or hostname of the AMT device.
+    pub host: String,
+    /// IPMI port (default 623).
+    pub port: u16,
+    /// IPMI username.
+    pub username: String,
+    /// IPMI password.
+    pub password: String,
+}
+
 /// Persisted application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -91,6 +108,10 @@ pub struct AppConfig {
     /// so they skip the wizard and keep their current host-mode behaviour.
     #[serde(default)]
     pub is_first_run: bool,
+
+    /// Configured AMT (Intel vPro) computers for remote power control.
+    #[serde(default)]
+    pub amt_computers: Vec<AmtComputer>,
 }
 
 fn default_true() -> bool {
@@ -125,6 +146,7 @@ impl Default for AppConfig {
             host_address: String::new(),
             preferred_ip: String::new(),
             is_first_run: false, // used as serde fallback for existing configs
+            amt_computers: Vec::new(),
         }
     }
 }

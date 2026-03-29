@@ -1,3 +1,4 @@
+mod amt;
 mod clipboard;
 mod core;
 mod file_transfer;
@@ -554,6 +555,62 @@ async fn remove_trusted_host(
 }
 
 #[tauri::command]
+async fn add_amt_computer(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    if name.is_empty() || host.is_empty() || username.is_empty() || password.is_empty() {
+        return Err("All fields are required".to_string());
+    }
+
+    let mut config = state.engine.config.lock().await;
+    let computer = crate::core::config::AmtComputer {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        host,
+        port,
+        username,
+        password,
+    };
+    config.amt_computers.push(computer);
+    config.save();
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_amt_computer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let mut config = state.engine.config.lock().await;
+    config.amt_computers.retain(|c| c.id != id);
+    config.save();
+    Ok(())
+}
+
+#[tauri::command]
+async fn power_on_amt_computer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let config = state.engine.config.lock().await;
+    let computer = config
+        .amt_computers
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or("Computer not found")?
+        .clone();
+    drop(config);
+
+    let controller = amt::AmtController::new(computer.host, computer.port, computer.username, computer.password);
+    controller.power_on().await
+}
+
+#[tauri::command]
 async fn send_file_to_peer(
     state: tauri::State<'_, AppState>,
     peer_id: String,
@@ -1065,6 +1122,9 @@ pub fn run() {
             update_settings,
             add_trusted_host,
             remove_trusted_host,
+            add_amt_computer,
+            remove_amt_computer,
+            power_on_amt_computer,
             check_accessibility_permission,
             open_accessibility_settings,
             get_setup_state,
