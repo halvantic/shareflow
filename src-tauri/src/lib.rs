@@ -1241,6 +1241,15 @@ pub fn run() {
                 }
             });
 
+            // Periodic tray menu update (refreshes every 2s to catch config changes like AMT computers)
+            let tray_update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    update_tray(&tray_update_handle).await;
+                }
+            });
+
             // Start the network server.
             let engine_server = engine.clone();
             tauri::async_runtime::spawn(async move {
