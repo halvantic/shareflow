@@ -1250,6 +1250,33 @@ pub fn run() {
                 }
             });
 
+            // On macOS: Periodic screen refresh to detect wake-from-sleep
+            // When the Mac wakes, screen resolution may change; we detect this by
+            // checking if local screens have changed and broadcast to peers.
+            #[cfg(target_os = "macos")]
+            {
+                let engine_screen_refresh = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut last_screens = crate::core::screen::get_screens();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let current_screens = crate::core::screen::get_screens();
+                        // Check if screens have changed (resolution, count, or position)
+                        let screens_changed = last_screens.len() != current_screens.len()
+                            || last_screens.iter().zip(&current_screens).any(|(a, b)| {
+                                a.width != b.width || a.height != b.height || a.x != b.x || a.y != b.y
+                            });
+                        if screens_changed {
+                            log::info!(
+                                "macOS: Screen configuration changed, refreshing and broadcasting to peers"
+                            );
+                            engine_screen_refresh.refresh_and_broadcast_screens().await;
+                            last_screens = current_screens;
+                        }
+                    }
+                });
+            }
+
             // Start the network server.
             let engine_server = engine.clone();
             tauri::async_runtime::spawn(async move {
