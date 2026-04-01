@@ -36,7 +36,10 @@
       "Bash(powershell -ExecutionPolicy Bypass -File /tmp/monitor.ps1)",
       "Bash(head -20 grep -n \"camera\\\\|audio\" 'D:/MK Share/shareflow/src-tauri/src/config.rs')",
       "Bash(grep -v \"//.*camera\\\\|//.*audio\")",
-      "Bash(npx tauri:*)"
+      "Bash(npx tauri:*)",
+      "Bash(grep -E \"^d|\\\\.json$|\\\\.tsx$|\\\\.ts$\")",
+      "Bash(\"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\nsis\\\\ShareFlow_1.41.0_x64-setup.exe\")",
+      "Bash(\"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\nsis\\\\ShareFlow_1.42.0_x64-setup.exe\")"
     ]
   }
 }

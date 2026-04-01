@@ -431,6 +431,9 @@ fn get_diagnostics() -> Vec<String> {
 
 #[tauri::command]
 fn quit_app() {
+    // Release input suppression before exiting so the Mac is never left
+    // with a live event tap in suppress=true state after the process dies.
+    crate::input::set_input_suppression(false);
     std::process::exit(0);
 }
 
@@ -781,6 +784,7 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
                     }
                 }
                 "quit" => {
+                    crate::input::set_input_suppression(false);
                     std::process::exit(0);
                 }
                 _ if id.starts_with("peer_") => {
@@ -990,6 +994,7 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                             if target_id == our_peer_id {
                                 let _ = injector.move_mouse(entry_x, entry_y);
                                 engine2.switch_to_local().await;
+                                crate::input::reprime_keyboard_for_focus();
                             }
                         }
                         crate::core::protocol::Message::ClipboardUpdate { content } => {

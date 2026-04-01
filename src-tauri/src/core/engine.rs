@@ -379,11 +379,29 @@ impl Engine {
         crate::input::notify_peers_connected(remaining > 0);
         // Cancel any in-progress file transfers so partial files don't linger on disk.
         self.file_receiver.cancel_all();
-        // If we were focused on this peer, switch back to local
-        let focus = self.focus.lock().await;
-        if matches!(&*focus, FocusState::Remote(id) if id == peer_id) {
-            drop(focus);
-            self.switch_to_local().await;
+        // If we were focused on this peer, switch back to local.
+        // Set focus to Local while holding the lock so no other task can race
+        // between the check and the state change (TOCTOU fix).
+        let was_focused = {
+            let mut focus = self.focus.lock().await;
+            if matches!(&*focus, FocusState::Remote(id) if id == peer_id) {
+                *focus = FocusState::Local;
+                true
+            } else {
+                false
+            }
+        };
+        if was_focused {
+            *self.last_switch_time.lock().await = Some(std::time::Instant::now());
+            self.is_remote.store(false, Ordering::Release);
+            crate::input::set_input_suppression(false);
+            crate::diag("Focus → local (peer disconnected)".into());
+            let _ = self
+                .ui_events
+                .send(UiEvent::FocusChanged {
+                    state: FocusState::Local,
+                })
+                .await;
         }
         log::info!("Peer removed: {}", peer_id);
         let _ = self

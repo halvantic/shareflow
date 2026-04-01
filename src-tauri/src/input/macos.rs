@@ -289,6 +289,7 @@ extern "C" {
     fn CFRunLoopGetCurrent() -> CFRunLoopRef;
     fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRun();
+    fn CFRunLoopStop(rl: CFRunLoopRef);
 
     fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
@@ -845,6 +846,14 @@ unsafe impl Sync for TapRef {}
 /// Global reference to the event tap for re-enabling after timeout.
 static TAP_REF: OnceLock<TapRef> = OnceLock::new();
 
+/// Wrapper to allow CFRunLoopRef (a raw pointer) in a static OnceLock.
+struct RunLoopRef(CFRunLoopRef);
+unsafe impl Send for RunLoopRef {}
+unsafe impl Sync for RunLoopRef {}
+
+/// Global reference to the event tap's CFRunLoop so stop_capture() can stop it.
+static RUN_LOOP_REF: OnceLock<RunLoopRef> = OnceLock::new();
+
 // --- Input Capture ---
 
 pub struct MacOSInputCapture {
@@ -938,6 +947,9 @@ unsafe fn run_event_tap() {
     CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopCommonModes);
     CGEventTapEnable(tap, true);
 
+    // Store the run loop so stop_capture() can stop it from another thread.
+    let _ = RUN_LOOP_REF.set(RunLoopRef(run_loop));
+
     log::info!("macOS event tap started — capturing input events");
     CFRunLoopRun();
 
@@ -957,6 +969,17 @@ impl InputCapture for MacOSInputCapture {
 
     fn stop_capture(&mut self) -> Result<(), String> {
         self.capturing = false;
+        // Ensure input is no longer suppressed so the Mac is not left without input.
+        set_suppress(false);
+        // Disable the event tap and stop its CFRunLoop so the thread can exit.
+        unsafe {
+            if let Some(tap) = TAP_REF.get() {
+                CGEventTapEnable(tap.0, false);
+            }
+            if let Some(rl) = RUN_LOOP_REF.get() {
+                CFRunLoopStop(rl.0);
+            }
+        }
         Ok(())
     }
 
