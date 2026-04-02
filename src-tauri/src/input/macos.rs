@@ -946,9 +946,19 @@ unsafe fn run_event_tap() {
     );
 
     if tap.is_null() {
-        log::error!(
-            "Failed to create CGEventTap. Ensure Accessibility permission is granted."
-        );
+        // Re-check Accessibility permission — the most common cause of tap
+        // creation failure is the permission being revoked after launch.
+        let trusted = AXIsProcessTrusted();
+        if !trusted {
+            log::error!(
+                "CGEventTap creation failed: Accessibility permission is not granted. \
+                 Go to System Settings → Privacy & Security → Accessibility and add ShareFlow."
+            );
+            // Signal the UI so it can show the permission prompt again.
+            ACCESSIBILITY_PERMISSION_LOST.store(true, Ordering::Release);
+        } else {
+            log::error!("Failed to create CGEventTap (Accessibility is granted — unknown cause).");
+        }
         return;
     }
 
@@ -1025,6 +1035,16 @@ impl InputCapture for MacOSInputCapture {
 }
 
 // --- Input Injection ---
+
+/// Set to true by run_event_tap() if CGEventTapCreate fails due to lost
+/// Accessibility permission. Checked by the periodic permission monitor in lib.rs.
+static ACCESSIBILITY_PERMISSION_LOST: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if the event tap failed because Accessibility permission was revoked
+/// after launch. Clears the flag on read so each revocation is reported once.
+pub fn take_accessibility_permission_lost() -> bool {
+    ACCESSIBILITY_PERMISSION_LOST.swap(false, Ordering::AcqRel)
+}
 
 /// Set to true by run_event_tap() once CGEventTapEnable() has been called.
 /// prime_keyboard() waits on this flag so that the warm-up Shift event is not

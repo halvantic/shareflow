@@ -8,9 +8,13 @@ use crate::core::screen::get_screens;
 use crate::network::connection::PeerConnection;
 
 /// Start the TCP/TLS server that accepts incoming peer connections.
+///
+/// `ready_tx` — if provided, fired after the listener is bound so callers that
+/// need to connect to this server can wait for it rather than using a fixed delay.
 pub async fn start_server(
     engine: Arc<Engine>,
     tls_config: Arc<rustls::ServerConfig>,
+    ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<(), String> {
     let config = engine.config.lock().await;
     let port = config.port;
@@ -24,6 +28,11 @@ pub async fn start_server(
         .map_err(|e| format!("Failed to bind {}: {}", bind_addr, e))?;
 
     log::info!("Server listening on {}", bind_addr);
+
+    // Signal the server is ready to accept connections.
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(());
+    }
 
     let acceptor = TlsAcceptor::from(tls_config);
 

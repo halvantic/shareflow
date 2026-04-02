@@ -191,6 +191,18 @@ pub fn notify_peers_connected(has_peers: bool) {
     let _ = has_peers;
 }
 
+/// On macOS: returns true (and clears the flag) if the event tap failed because
+/// Accessibility permission was revoked since the app launched.
+/// Always returns false on other platforms.
+pub fn take_accessibility_permission_lost() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::take_accessibility_permission_lost()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Release any modifier keys (Shift, Ctrl, Alt, Win/Cmd) that are physically
 /// held on the local machine before engaging input suppression.  Prevents stuck
 /// modifiers on the local OS when the key-up arrives after SUPPRESS=true and

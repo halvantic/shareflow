@@ -119,6 +119,11 @@ pub struct AppConfig {
     /// backward-compatible with peers that predate this feature).
     #[serde(default)]
     pub pairing_code: String,
+
+    /// Set to true if the config file could not be parsed and defaults were used.
+    /// Never written to disk — indicates to the engine that it should alert the user.
+    #[serde(skip)]
+    pub was_corrupted: bool,
 }
 
 fn default_true() -> bool {
@@ -155,6 +160,7 @@ impl Default for AppConfig {
             is_first_run: false, // used as serde fallback for existing configs
             amt_computers: Vec::new(),
             pairing_code: String::new(),
+            was_corrupted: false,
         }
     }
 }
@@ -165,7 +171,19 @@ impl AppConfig {
         let path = config_path();
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
-                let mut config: Self = serde_json::from_str(&contents).unwrap_or_default();
+                let mut config: Self = match serde_json::from_str(&contents) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!(
+                            "Config file is corrupt and cannot be parsed ({}). \
+                             Resetting to defaults — trusted peers and neighbors have been cleared.",
+                            e
+                        );
+                        let mut default = Self::default();
+                        default.was_corrupted = true;
+                        return default;
+                    }
+                };
                 let mut changed = false;
 
                 // Fix placeholder hostnames from previous versions

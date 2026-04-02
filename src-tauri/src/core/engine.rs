@@ -86,6 +86,9 @@ pub enum UiEvent {
         fingerprint: String,
         expected: String,
     },
+    /// Config file was corrupt on load and has been reset to defaults.
+    /// Trusted peers, neighbors, and other settings have been cleared.
+    ConfigCorrupted,
 }
 
 impl Engine {

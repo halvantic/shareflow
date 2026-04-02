@@ -1108,9 +1108,20 @@ pub fn run() {
                 use std::io::Write;
                 f.write_all(message.as_bytes())
             });
+        // Restrict crash log to owner-only so peer IDs / file paths are not
+        // readable by other local users.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &crash_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
     }));
 
     let config = AppConfig::load();
+    let config_corrupted = config.was_corrupted;
     log::info!(
         "ShareFlow starting — peer_id: {}, name: {}",
         config.peer_id,
@@ -1174,13 +1185,22 @@ pub fn run() {
             let engine = engine.clone();
             let app_handle = app.handle().clone();
 
+            // If the config was corrupted on load, alert the UI once the event
+            // listener is ready (slight delay so the frontend has subscribed).
+            if config_corrupted {
+                let engine_alert = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                    let _ = engine_alert.ui_events.send(UiEvent::ConfigCorrupted).await;
+                });
+            }
+
             // On macOS, remove the Dock icon so the app lives only in the menu bar.
             #[cfg(target_os = "macos")]
             let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Check Accessibility permission on macOS and notify the UI if not yet granted.
-            // The user must enable ShareFlow in System Settings → Privacy & Security → Accessibility
-            // for keyboard/mouse capture (event tap) to work.
+            // Also re-notifies if the event tap reports that permission was revoked at runtime.
             #[cfg(target_os = "macos")]
             {
                 let app_handle_perm = app.handle().clone();
@@ -1190,6 +1210,16 @@ pub fn run() {
                         let _ = app_handle_perm.emit("permissions-required", serde_json::json!({
                             "accessibility": false
                         }));
+                    }
+                    // Periodically re-check in case permission is revoked after launch.
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        if crate::input::take_accessibility_permission_lost() || !macos_accessibility_trusted() {
+                            log::warn!("Accessibility permission lost or revoked — notifying UI");
+                            let _ = app_handle_perm.emit("permissions-required", serde_json::json!({
+                                "accessibility": false
+                            }));
+                        }
                     }
                 });
             }
@@ -1250,19 +1280,23 @@ pub fn run() {
                 });
             }
 
-            // Start the network server.
+            // Start the network server. Signal server_ready_rx once the port is bound
+            // so the agent-mode auto-connect can wait on it instead of a fixed delay.
+            let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel::<()>();
             let engine_server = engine.clone();
             tauri::async_runtime::spawn(async move {
                 match network::tls::make_server_config() {
                     Ok(tls_config) => {
                         if let Err(e) =
-                            network::server::start_server(engine_server, tls_config).await
+                            network::server::start_server(engine_server, tls_config, Some(server_ready_tx)).await
                         {
                             log::error!("Server error: {}", e);
                         }
                     }
                     Err(e) => {
                         log::error!("Failed to create TLS config: {}", e);
+                        // Drop server_ready_tx without sending so the agent task
+                        // sees the channel closed and falls through to auto-connect anyway.
                     }
                 }
             });
@@ -1312,8 +1346,8 @@ pub fn run() {
             });
 
             // Agent mode: auto-connect to the configured host on startup.
-            // A short delay lets the server finish binding and the UI load so
-            // that PeerConnected events reach the frontend listener.
+            // Wait for the server to finish binding (via server_ready_rx) so that
+            // the host can reach back to us if needed, rather than using a fixed delay.
             {
                 let engine_agent = engine.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1322,7 +1356,11 @@ pub fn run() {
                         (cfg.agent_mode, cfg.host_address.clone())
                     };
                     if is_agent && !host_addr.is_empty() {
-                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        // Wait for our own server to be bound (or give up after 5 s).
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            server_ready_rx,
+                        ).await;
                         log::info!("Agent mode: auto-connecting to host at {}", host_addr);
                         match auto_connect_to_peer(engine_agent, &host_addr).await {
                             Ok(msg) => log::info!("Agent auto-connect: {}", msg),
@@ -1396,6 +1434,7 @@ pub fn run() {
                     discovery_port: config.discovery_port,
                     timestamp: 0, // filled in by broadcast_presence
                     cert_fingerprint: own_cert_fp,
+                    nonce: String::new(), // filled in by broadcast_presence
                 };
                 let own_peer_id = config.peer_id.clone();
                 let discovery_port = config.discovery_port;

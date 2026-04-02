@@ -41,12 +41,31 @@ pub fn get_or_create_identity() -> Result<(Vec<CertificateDer<'static>>, Private
     std::fs::write(&cert_path, cert.pem()).map_err(|e| e.to_string())?;
     std::fs::write(&key_path, key_pair.serialize_pem()).map_err(|e| e.to_string())?;
 
-    // Restrict private key file permissions to owner-only on Unix.
+    // Restrict private key file permissions to owner-only.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("Failed to set key file permissions: {}", e))?;
+    }
+    // On Windows, remove inherited ACEs and grant full control only to the
+    // current user so other local accounts cannot read the private key.
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = key_path.to_string_lossy();
+        let status = std::process::Command::new("icacls")
+            .args([
+                path_str.as_ref(),
+                "/inheritance:r",                   // remove inherited ACEs
+                "/grant:r",
+                &format!("{}:F", whoami_windows()),  // grant current user full control
+            ])
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => log::warn!("icacls on key file exited with {}", s),
+            Err(e) => log::warn!("Failed to run icacls on key file: {}", e),
+        }
     }
 
     let cert_der = CertificateDer::from(cert.der().to_vec());
@@ -170,6 +189,22 @@ fn data_dir() -> PathBuf {
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        PathBuf::from(".").join("shareflow")
+        // Follow XDG spec: use $XDG_DATA_HOME or $HOME/.local/share
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                PathBuf::from(home).join(".local").join("share")
+            });
+        base.join("shareflow")
     }
+}
+
+/// Returns the current Windows username in DOMAIN\user format for icacls.
+#[cfg(target_os = "windows")]
+fn whoami_windows() -> String {
+    // USERDOMAIN\USERNAME is the format icacls expects.
+    let domain = std::env::var("USERDOMAIN").unwrap_or_default();
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "UNKNOWN".into());
+    if domain.is_empty() { user } else { format!("{}\\{}", domain, user) }
 }

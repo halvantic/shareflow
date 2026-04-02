@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_DISCOVERY_PORT: u16 = 24801;
@@ -21,10 +22,17 @@ pub struct Announcement {
     /// Allows receivers to pre-verify identity before attempting a TLS connection.
     #[serde(default)]
     pub cert_fingerprint: String,
+    /// Per-broadcast random UUID nonce.
+    /// Receivers reject any (peer_id, nonce) pair seen in the last 60 s, preventing
+    /// hot replay where an attacker re-broadcasts fresh packets every ~25 s.
+    #[serde(default)]
+    pub nonce: String,
 }
 
 /// Maximum age (in seconds) of a discovery announcement before it's discarded.
 const MAX_ANNOUNCEMENT_AGE_SECS: u64 = 30;
+/// How long a (peer_id, nonce) pair is remembered to reject duplicate broadcasts.
+const NONCE_WINDOW_SECS: u64 = 60;
 
 /// Broadcast our presence on the LAN.
 pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
@@ -33,12 +41,13 @@ pub fn broadcast_presence(announcement: &Announcement) -> Result<(), String> {
         .set_broadcast(true)
         .map_err(|e| e.to_string())?;
 
-    // Include current timestamp in the announcement for replay protection.
+    // Include current timestamp and a fresh random nonce for replay protection.
     let mut ann = announcement.clone();
     ann.timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    ann.nonce = uuid::Uuid::new_v4().to_string();
 
     let payload = serde_json::to_vec(&ann).map_err(|e| e.to_string())?;
     let mut packet = Vec::with_capacity(4 + payload.len());
@@ -73,8 +82,17 @@ pub fn listen_for_peers(
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;
 
+    // Track (peer_id, nonce) → first-seen Instant to reject hot-replay duplicates.
+    let mut seen_nonces: HashMap<(String, String), Instant> = HashMap::new();
+
     let mut buf = [0u8; 4096];
     loop {
+        // Evict nonces older than the replay window on each iteration.
+        let now_instant = Instant::now();
+        seen_nonces.retain(|_, t| {
+            now_instant.duration_since(*t).as_secs() < NONCE_WINDOW_SECS
+        });
+
         match socket.recv_from(&mut buf) {
             Ok((len, addr)) => {
                 if len > 4 && &buf[..4] == MAGIC {
@@ -92,6 +110,18 @@ pub fn listen_for_peers(
                             {
                                 log::debug!("Discarding stale announcement from {}", announcement.peer_id);
                                 continue;
+                            }
+                            // Reject replayed (peer_id, nonce) pairs.
+                            if !announcement.nonce.is_empty() {
+                                let key = (announcement.peer_id.clone(), announcement.nonce.clone());
+                                if seen_nonces.contains_key(&key) {
+                                    log::debug!(
+                                        "Discarding replayed announcement from {} (nonce {})",
+                                        announcement.peer_id, announcement.nonce
+                                    );
+                                    continue;
+                                }
+                                seen_nonces.insert(key, Instant::now());
                             }
                             callback(announcement, addr);
                         }
