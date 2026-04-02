@@ -1,6 +1,7 @@
 mod amt;
 mod clipboard;
 mod core;
+mod credentials;
 mod file_transfer;
 mod input;
 mod network;

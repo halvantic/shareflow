@@ -174,6 +174,12 @@ impl AppConfig {
                     changed = true;
                 }
 
+                // Decrypt AMT credentials (migration: plaintext values pass through unchanged).
+                for computer in &mut config.amt_computers {
+                    computer.username = crate::credentials::decrypt_credential(&computer.username);
+                    computer.password = crate::credentials::decrypt_credential(&computer.password);
+                }
+
                 if changed {
                     config.save();
                 }
@@ -199,7 +205,13 @@ impl AppConfig {
                 return;
             }
         }
-        let json = match serde_json::to_string_pretty(self) {
+        // Encrypt AMT credentials before writing to disk.
+        let mut to_save = self.clone();
+        for computer in &mut to_save.amt_computers {
+            computer.username = crate::credentials::encrypt_credential(&computer.username);
+            computer.password = crate::credentials::encrypt_credential(&computer.password);
+        }
+        let json = match serde_json::to_string_pretty(&to_save) {
             Ok(j) => j,
             Err(e) => {
                 log::error!("Failed to serialize config: {}", e);
@@ -226,7 +238,7 @@ fn config_path() -> PathBuf {
     path
 }
 
-fn dirs_config_path() -> PathBuf {
+pub(crate) fn dirs_config_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         std::env::var("APPDATA")
