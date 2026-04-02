@@ -16,7 +16,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** `"csp": null` removes all XSS mitigation. Frontend XSS → unrestricted Tauri IPC → RCE.  
 - **Fix:** Set `"csp": "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self';"`. Test all frontend routes.
 
-### 1.2 · macOS: move CFRelease out of unreachable code path `[ ]`
+### 1.2 · macOS: move CFRelease out of unreachable code path `[x]`
 - **Severity:** Critical  
 - **File:** `src-tauri/src/input/macos.rs` lines 902–959 (`run_event_tap`)  
 - **Issue:** `CFMachPortRef` and `CFRunLoopSourceRef` are released after `CFRunLoopRun()`, which never returns. Both are leaked on every capture session start.  

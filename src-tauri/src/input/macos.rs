@@ -854,6 +854,14 @@ unsafe impl Sync for RunLoopRef {}
 /// Global reference to the event tap's CFRunLoop so stop_capture() can stop it.
 static RUN_LOOP_REF: OnceLock<RunLoopRef> = OnceLock::new();
 
+/// Wrapper to allow CFRunLoopSourceRef (a raw pointer) in a static OnceLock.
+struct RunLoopSourceRef(CFRunLoopSourceRef);
+unsafe impl Send for RunLoopSourceRef {}
+unsafe impl Sync for RunLoopSourceRef {}
+
+/// Global reference to the run-loop source so stop_capture() can release it.
+static RUN_LOOP_SOURCE_REF: OnceLock<RunLoopSourceRef> = OnceLock::new();
+
 // --- Input Capture ---
 
 pub struct MacOSInputCapture {
@@ -947,15 +955,17 @@ unsafe fn run_event_tap() {
     CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopCommonModes);
     CGEventTapEnable(tap, true);
 
-    // Store the run loop so stop_capture() can stop it from another thread.
+    // Store references so stop_capture() can release them from another thread.
+    // These must be set before CFRunLoopRun() so stop_capture() always sees them.
     let _ = RUN_LOOP_REF.set(RunLoopRef(run_loop));
+    let _ = RUN_LOOP_SOURCE_REF.set(RunLoopSourceRef(run_loop_source));
 
     log::info!("macOS event tap started — capturing input events");
     CFRunLoopRun();
-
-    // Cleanup (won't normally reach here)
-    CFRelease(run_loop_source);
-    CFRelease(tap);
+    // CFRunLoopRun() returns only when stop_capture() calls CFRunLoopStop().
+    // Resources are released by stop_capture() after CFRunLoopStop() returns,
+    // ensuring they are freed even if this thread exits without cleanup.
+    log::info!("macOS event tap run loop exited");
 }
 
 impl InputCapture for MacOSInputCapture {
@@ -971,15 +981,25 @@ impl InputCapture for MacOSInputCapture {
         self.capturing = false;
         // Ensure input is no longer suppressed so the Mac is not left without input.
         set_suppress(false);
-        // Disable the event tap and stop its CFRunLoop so the thread can exit.
         unsafe {
+            // Disable the tap first so no new events fire during teardown.
             if let Some(tap) = TAP_REF.get() {
                 CGEventTapEnable(tap.0, false);
             }
+            // Stop the CFRunLoop; this causes CFRunLoopRun() in the tap thread to return.
             if let Some(rl) = RUN_LOOP_REF.get() {
                 CFRunLoopStop(rl.0);
             }
+            // Release the run-loop source and tap port now that the loop has stopped.
+            // These were stored before CFRunLoopRun() so they are always valid here.
+            if let Some(src) = RUN_LOOP_SOURCE_REF.get() {
+                CFRelease(src.0);
+            }
+            if let Some(tap) = TAP_REF.get() {
+                CFRelease(tap.0);
+            }
         }
+        log::info!("macOS event tap stopped and resources released");
         Ok(())
     }
 
