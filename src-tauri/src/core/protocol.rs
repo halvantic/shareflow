@@ -180,6 +180,12 @@ pub fn encode_message(msg: &Message) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Maximum allowed size for a single framed message (64 MB).
+/// Rejects absurdly large length prefixes before we attempt to accumulate
+/// that many bytes in the pending buffer, protecting against DoS via a
+/// crafted 0xFFFF_FFFF length header.
+const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
 /// Deserialize a message from a length-prefixed buffer.
 /// Returns (message, bytes_consumed).
 pub fn decode_message(buf: &[u8]) -> Result<Option<(Message, usize)>, String> {
@@ -187,6 +193,12 @@ pub fn decode_message(buf: &[u8]) -> Result<Option<(Message, usize)>, String> {
         return Ok(None);
     }
     let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if len > MAX_MESSAGE_SIZE {
+        return Err(format!(
+            "Message length {} exceeds maximum allowed size of {} bytes",
+            len, MAX_MESSAGE_SIZE
+        ));
+    }
     if buf.len() < 4 + len {
         return Ok(None);
     }
@@ -217,6 +229,11 @@ pub fn clipboard_to_message(content: ClipboardContent) -> Message {
     }
 }
 
+/// Maximum decompressed clipboard image size (512 MB of RGBA data).
+/// A 16 K × 16 K image at 4 bytes/pixel is 1 073 741 824 bytes (~1 GB);
+/// 512 MB covers 4K displays (3840 × 2160 × 4 = ~33 MB) with ample headroom.
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 512 * 1024 * 1024;
+
 /// Decompress a ClipboardUpdateCompressed back into ClipboardContent.
 pub fn decompress_clipboard(
     width: usize,
@@ -224,6 +241,18 @@ pub fn decompress_clipboard(
     compressed_rgba: Vec<u8>,
     _original_len: usize,
 ) -> Result<ClipboardContent, String> {
+    // Validate dimensions before decompressing to prevent OOM from a malicious peer
+    // sending a crafted width/height that causes a multi-gigabyte allocation.
+    let expected_bytes = width
+        .checked_mul(height)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| format!("Clipboard image dimensions overflow: {}x{}", width, height))?;
+    if expected_bytes > MAX_CLIPBOARD_IMAGE_BYTES {
+        return Err(format!(
+            "Clipboard image too large: {}x{} = {} bytes (max {})",
+            width, height, expected_bytes, MAX_CLIPBOARD_IMAGE_BYTES
+        ));
+    }
     let rgba = lz4_flex::decompress_size_prepended(&compressed_rgba)
         .map_err(|e| format!("LZ4 decompression failed: {}", e))?;
     Ok(ClipboardContent::Image { width, height, rgba })

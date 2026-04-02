@@ -46,7 +46,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** `PostThreadMessageW` failure is silently swallowed; subsequent `join()` blocks forever if the thread is already gone.  
 - **Fix:** Check `PostThreadMessageW` bool return; log on failure; use a cancel `AtomicBool` + short-timeout join rather than `join()` blocking indefinitely.
 
-### 1.7 · Validate LZ4/message length before allocation `[ ]`
+### 1.7 · Validate LZ4/message length before allocation `[x]`
 - **Severity:** High  
 - **Files:** `src-tauri/src/network/connection.rs` line 91; `src-tauri/src/core/protocol.rs` line 174; `src-tauri/src/clipboard/sync.rs` lines 126–152  
 - **Issue:** A `0xFFFFFFFF` length prefix triggers a multi-GB allocation before the 16 MB pending buffer cap is checked. Clipboard image width/height not validated before LZ4 decompress.  
