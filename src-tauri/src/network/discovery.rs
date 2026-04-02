@@ -17,6 +17,10 @@ pub struct Announcement {
     /// Timestamp to prevent replay attacks. Seconds since UNIX epoch.
     #[serde(default)]
     pub timestamp: u64,
+    /// SHA-256 fingerprint of the sender's TLS certificate, colon-separated hex.
+    /// Allows receivers to pre-verify identity before attempting a TLS connection.
+    #[serde(default)]
+    pub cert_fingerprint: String,
 }
 
 /// Maximum age (in seconds) of a discovery announcement before it's discarded.

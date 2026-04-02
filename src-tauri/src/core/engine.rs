@@ -74,6 +74,18 @@ pub enum UiEvent {
         name: String,
         address: String,
     },
+    /// A new peer's certificate fingerprint has been pinned (TOFU first connect).
+    CertificatePinned {
+        id: String,
+        name: String,
+        fingerprint: String,
+    },
+    /// A known peer presented a different certificate fingerprint (possible MITM).
+    CertificateMismatch {
+        id: String,
+        fingerprint: String,
+        expected: String,
+    },
 }
 
 impl Engine {

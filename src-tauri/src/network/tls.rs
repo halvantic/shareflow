@@ -72,22 +72,33 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
     hash.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":")
 }
 
-/// Create a rustls ClientConfig that verifies the server certificate
-/// against trusted peer fingerprints (if any are configured).
-pub fn make_client_config(trusted_fingerprints: Vec<String>) -> Result<Arc<rustls::ClientConfig>, String> {
+/// Create a rustls ClientConfig that accepts any server certificate (TOFU model)
+/// and captures the presented certificate fingerprint for post-handshake pinning.
+///
+/// The returned `Arc<std::sync::Mutex<Option<String>>>` will contain the live
+/// fingerprint after the TLS handshake completes. The caller is responsible for
+/// validating it against stored trusted-peer fingerprints and pinning new peers.
+pub fn make_client_config() -> Result<(Arc<rustls::ClientConfig>, Arc<std::sync::Mutex<Option<String>>>), String> {
+    let capture: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let verifier = PinningCertVerifier { fingerprint_capture: Arc::clone(&capture) };
     let config = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinningCertVerifier { trusted_fingerprints }))
+        .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
-    Ok(Arc::new(config))
+    Ok((Arc::new(config), capture))
 }
 
-/// Certificate verifier that checks the peer's certificate fingerprint
-/// against a list of trusted fingerprints. If no fingerprints are configured
-/// (first connection), it accepts the cert and logs the fingerprint for pinning.
-#[derive(Debug)]
+/// Certificate verifier that captures the presented certificate fingerprint into
+/// a shared slot for post-handshake validation by the caller. Always accepts the
+/// TLS cert — actual trust decisions are made after the peer ID is known.
 struct PinningCertVerifier {
-    trusted_fingerprints: Vec<String>,
+    fingerprint_capture: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl std::fmt::Debug for PinningCertVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinningCertVerifier").finish()
+    }
 }
 
 impl rustls::client::danger::ServerCertVerifier for PinningCertVerifier {
@@ -100,23 +111,12 @@ impl rustls::client::danger::ServerCertVerifier for PinningCertVerifier {
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         let fp = cert_fingerprint(end_entity.as_ref());
-
-        if self.trusted_fingerprints.is_empty() {
-            // No trusted peers configured yet — accept (TOFU: trust on first use)
-            log::warn!("No trusted peer fingerprints configured. Accepting cert with fingerprint: {}", fp);
-            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        // Store fingerprint so the caller can validate/pin it after the handshake.
+        if let Ok(mut guard) = self.fingerprint_capture.lock() {
+            *guard = Some(fp.clone());
         }
-
-        if self.trusted_fingerprints.iter().any(|t| t == &fp) {
-            log::info!("Peer certificate fingerprint verified: {}", fp);
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        } else {
-            log::error!("Peer certificate fingerprint MISMATCH: {}. Connection rejected.", fp);
-            Err(rustls::Error::General(format!(
-                "Certificate fingerprint {} not in trusted peers list",
-                fp
-            )))
-        }
+        log::debug!("Peer TLS cert fingerprint: {}", fp);
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(

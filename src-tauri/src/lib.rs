@@ -80,11 +80,7 @@ async fn connect_to_peer_cmd(
     state: tauri::State<'_, AppState>,
     address: String,
 ) -> Result<String, String> {
-    let trusted_fps: Vec<String> = {
-        let config = state.engine.config.lock().await;
-        config.trusted_peers.iter().map(|p| p.cert_fingerprint.clone()).collect()
-    };
-    let tls_config = network::tls::make_client_config(trusted_fps)?;
+    let (tls_config, fp_capture) = network::tls::make_client_config()?;
     let mut conn = network::connection::connect_to_peer(&address, tls_config).await?;
 
     let config = state.engine.config.lock().await;
@@ -122,6 +118,55 @@ async fn connect_to_peer_cmd(
                     crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION
                 ));
             }
+
+            // Validate / pin the TLS certificate fingerprint now that we know the peer_id.
+            let live_fp = fp_capture.lock().map(|g| g.clone()).unwrap_or(None)
+                .unwrap_or_default();
+            if live_fp.is_empty() {
+                return Err("TLS handshake did not produce a certificate fingerprint".into());
+            }
+            {
+                let mut cfg = state.engine.config.lock().await;
+                match cfg.trusted_peers.iter().find(|p| p.peer_id == peer_id).map(|p| p.cert_fingerprint.clone()) {
+                    Some(expected) if expected != live_fp => {
+                        let _ = state.engine.ui_events.send(
+                            crate::core::engine::UiEvent::CertificateMismatch {
+                                id: peer_id.clone(),
+                                fingerprint: live_fp.clone(),
+                                expected: expected.clone(),
+                            }
+                        ).await;
+                        return Err(format!(
+                            "Certificate fingerprint mismatch for peer {}! \
+                             Got {} but expected {}. Refusing connection.",
+                            peer_id, live_fp, expected
+                        ));
+                    }
+                    None => {
+                        // New peer — TOFU: pin fingerprint and persist.
+                        cfg.trusted_peers.push(crate::core::config::TrustedPeer {
+                            peer_id: peer_id.clone(),
+                            name: name.clone(),
+                            cert_fingerprint: live_fp.clone(),
+                        });
+                        cfg.save();
+                        drop(cfg);
+                        let _ = state.engine.ui_events.send(
+                            crate::core::engine::UiEvent::CertificatePinned {
+                                id: peer_id.clone(),
+                                name: name.clone(),
+                                fingerprint: live_fp.clone(),
+                            }
+                        ).await;
+                        log::info!("Pinned new peer {} cert fingerprint: {}", peer_id, live_fp);
+                    }
+                    Some(_) => {
+                        // Known peer, fingerprint matches — all good.
+                        log::debug!("Cert fingerprint verified for peer {}", peer_id);
+                    }
+                }
+            }
+
             let ack = crate::core::protocol::Message::HelloAck {
                 protocol_version: crate::core::protocol::PROTOCOL_VERSION,
                 peer_id: our_peer_id.clone(),
@@ -889,11 +934,7 @@ fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std:
 
 /// Auto-connect to a peer (reuses connection logic from connect_to_peer_cmd).
 async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<String, String> {
-    let trusted_fps: Vec<String> = {
-        let config = engine.config.lock().await;
-        config.trusted_peers.iter().map(|p| p.cert_fingerprint.clone()).collect()
-    };
-    let tls_config = network::tls::make_client_config(trusted_fps)?;
+    let (tls_config, fp_capture) = network::tls::make_client_config()?;
     let mut conn = network::connection::connect_to_peer(address, tls_config).await?;
 
     let config = engine.config.lock().await;
@@ -931,6 +972,55 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
                     crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION
                 ));
             }
+
+            // Validate / pin the TLS certificate fingerprint now that we know the peer_id.
+            let live_fp = fp_capture.lock().map(|g| g.clone()).unwrap_or(None)
+                .unwrap_or_default();
+            if live_fp.is_empty() {
+                return Err("TLS handshake did not produce a certificate fingerprint".into());
+            }
+            {
+                let mut cfg = engine.config.lock().await;
+                match cfg.trusted_peers.iter().find(|p| p.peer_id == peer_id).map(|p| p.cert_fingerprint.clone()) {
+                    Some(expected) if expected != live_fp => {
+                        let _ = engine.ui_events.send(
+                            crate::core::engine::UiEvent::CertificateMismatch {
+                                id: peer_id.clone(),
+                                fingerprint: live_fp.clone(),
+                                expected: expected.clone(),
+                            }
+                        ).await;
+                        return Err(format!(
+                            "Certificate fingerprint mismatch for peer {}! \
+                             Got {} but expected {}. Refusing connection.",
+                            peer_id, live_fp, expected
+                        ));
+                    }
+                    None => {
+                        // New peer — TOFU: pin fingerprint and persist.
+                        cfg.trusted_peers.push(crate::core::config::TrustedPeer {
+                            peer_id: peer_id.clone(),
+                            name: name.clone(),
+                            cert_fingerprint: live_fp.clone(),
+                        });
+                        cfg.save();
+                        drop(cfg);
+                        let _ = engine.ui_events.send(
+                            crate::core::engine::UiEvent::CertificatePinned {
+                                id: peer_id.clone(),
+                                name: name.clone(),
+                                fingerprint: live_fp.clone(),
+                            }
+                        ).await;
+                        log::info!("Pinned new peer {} cert fingerprint: {}", peer_id, live_fp);
+                    }
+                    Some(_) => {
+                        // Known peer, fingerprint matches — all good.
+                        log::debug!("Cert fingerprint verified for peer {}", peer_id);
+                    }
+                }
+            }
+
             let ack = crate::core::protocol::Message::HelloAck {
                 protocol_version: crate::core::protocol::PROTOCOL_VERSION,
                 peer_id: our_peer_id.clone(),
@@ -1437,12 +1527,19 @@ pub fn run() {
             let app_handle_disc = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let config = engine_disc.config.lock().await;
+                // Include our cert fingerprint so receivers can pre-verify identity.
+                let own_cert_fp = network::tls::get_or_create_identity()
+                    .ok()
+                    .and_then(|(certs, _)| certs.into_iter().next())
+                    .map(|cert| network::tls::cert_fingerprint(cert.as_ref()))
+                    .unwrap_or_default();
                 let announcement = network::discovery::Announcement {
                     peer_id: config.peer_id.clone(),
                     name: config.machine_name.clone(),
                     port: config.port,
                     discovery_port: config.discovery_port,
                     timestamp: 0, // filled in by broadcast_presence
+                    cert_fingerprint: own_cert_fp,
                 };
                 let own_peer_id = config.peer_id.clone();
                 let discovery_port = config.discovery_port;
@@ -1487,6 +1584,7 @@ pub fn run() {
                             let engine_ac = engine_auto.clone();
                             let app_handle_ac = app_handle_disc.clone();
                             let peer_id = ann.peer_id.clone();
+                            let ann_cert_fp = ann.cert_fingerprint.clone();
                             let addr_clone = address.clone();
                             let connecting = connecting_peers.clone();
 
@@ -1503,6 +1601,24 @@ pub fn run() {
                                 let config = engine_ac.config.lock().await;
                                 let auto_connect = config.auto_connect;
                                 let is_trusted = config.trusted_hosts.iter().any(|h| h.peer_id == peer_id);
+
+                                // If announcement includes a cert fingerprint and we have a
+                                // stored fingerprint for this peer, verify they match before
+                                // attempting TLS — catches spoofed announcements early.
+                                if !ann_cert_fp.is_empty() {
+                                    if let Some(stored) = config.trusted_peers.iter().find(|p| p.peer_id == peer_id) {
+                                        if stored.cert_fingerprint != ann_cert_fp {
+                                            log::warn!(
+                                                "Discovery: cert fingerprint mismatch for peer {} — \
+                                                 announcement fp={}, stored fp={}. Skipping auto-connect.",
+                                                peer_id, ann_cert_fp, stored.cert_fingerprint
+                                            );
+                                            drop(config);
+                                            connecting.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
+                                            return;
+                                        }
+                                    }
+                                }
                                 drop(config);
 
                                 if auto_connect && is_trusted {
