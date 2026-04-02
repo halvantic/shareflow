@@ -3,11 +3,27 @@ use serde::{Deserialize, Serialize};
 /// Unique identifier for a peer on the network.
 pub type PeerId = String;
 
+/// Current wire-protocol version. Increment this whenever a
+/// backward-incompatible change is made to the Message enum (new required
+/// fields in existing variants, removed variants, changed field types).
+///
+/// Version history:
+///   1 — initial versioned protocol (Hello/HelloAck gain protocol_version field)
+pub const PROTOCOL_VERSION: u16 = 1;
+
+/// Oldest protocol version this build will accept from a remote peer.
+/// Connections with a lower version are rejected with a clear error message
+/// instead of silently failing or producing corrupt state.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u16 = 1;
+
 /// All messages sent between peers over the network.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// Handshake sent on connection.
     Hello {
+        /// Wire-protocol version spoken by the sender.
+        /// Checked against MIN_SUPPORTED_PROTOCOL_VERSION on receipt.
+        protocol_version: u16,
         peer_id: PeerId,
         name: String,
         screens: Vec<ScreenInfo>,
@@ -15,6 +31,8 @@ pub enum Message {
 
     /// Acknowledge a hello.
     HelloAck {
+        /// Wire-protocol version spoken by the sender.
+        protocol_version: u16,
         peer_id: PeerId,
         name: String,
         screens: Vec<ScreenInfo>,

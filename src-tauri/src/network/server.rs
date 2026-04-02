@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
 use crate::core::engine::{Engine, FocusState};
-use crate::core::protocol::Message;
+use crate::core::protocol::{Message, PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
 use crate::core::screen::get_screens;
 use crate::network::connection::PeerConnection;
 
@@ -78,6 +78,7 @@ async fn handle_peer_session(
 
     // Send Hello (handshake — hi-priority is fine)
     let hello = Message::Hello {
+        protocol_version: PROTOCOL_VERSION,
         peer_id: our_peer_id.clone(),
         name: our_name.clone(),
         screens: screens.clone(),
@@ -89,17 +90,27 @@ async fn handle_peer_session(
     // Wait for HelloAck or Hello from remote
     let (remote_peer_id, remote_name, remote_screens) = match conn.incoming.recv().await {
         Some(Message::Hello {
+            protocol_version,
             peer_id,
             name,
             screens,
         })
         | Some(Message::HelloAck {
+            protocol_version,
             peer_id,
             name,
             screens,
         }) => {
-            // Send our HelloAck if they sent Hello
+            if protocol_version < MIN_SUPPORTED_PROTOCOL_VERSION {
+                log::error!(
+                    "Rejecting peer {}: protocol version {} is below minimum {}",
+                    peer_id, protocol_version, MIN_SUPPORTED_PROTOCOL_VERSION
+                );
+                return;
+            }
+            // Send our HelloAck
             let ack = Message::HelloAck {
+                protocol_version: PROTOCOL_VERSION,
                 peer_id: our_peer_id.clone(),
                 name: our_name.clone(),
                 screens: get_screens(),

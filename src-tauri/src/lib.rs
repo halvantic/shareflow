@@ -90,6 +90,7 @@ async fn connect_to_peer_cmd(
     let config = state.engine.config.lock().await;
     let our_peer_id = config.peer_id.clone();
     let hello = crate::core::protocol::Message::Hello {
+        protocol_version: crate::core::protocol::PROTOCOL_VERSION,
         peer_id: config.peer_id.clone(),
         name: config.machine_name.clone(),
         screens: get_screens(),
@@ -103,16 +104,26 @@ async fn connect_to_peer_cmd(
 
     match conn.incoming.recv().await {
         Some(crate::core::protocol::Message::HelloAck {
+            protocol_version,
             peer_id,
             name,
             screens,
         })
         | Some(crate::core::protocol::Message::Hello {
+            protocol_version,
             peer_id,
             name,
             screens,
         }) => {
+            if protocol_version < crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION {
+                return Err(format!(
+                    "Peer protocol version {} is below minimum supported version {}",
+                    protocol_version,
+                    crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION
+                ));
+            }
             let ack = crate::core::protocol::Message::HelloAck {
+                protocol_version: crate::core::protocol::PROTOCOL_VERSION,
                 peer_id: our_peer_id.clone(),
                 name: String::new(),
                 screens: get_screens(),
@@ -888,6 +899,7 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
     let config = engine.config.lock().await;
     let our_peer_id = config.peer_id.clone();
     let hello = crate::core::protocol::Message::Hello {
+        protocol_version: crate::core::protocol::PROTOCOL_VERSION,
         peer_id: config.peer_id.clone(),
         name: config.machine_name.clone(),
         screens: get_screens(),
@@ -901,16 +913,26 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
 
     match conn.incoming.recv().await {
         Some(crate::core::protocol::Message::HelloAck {
+            protocol_version,
             peer_id,
             name,
             screens,
         })
         | Some(crate::core::protocol::Message::Hello {
+            protocol_version,
             peer_id,
             name,
             screens,
         }) => {
+            if protocol_version < crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION {
+                return Err(format!(
+                    "Peer protocol version {} is below minimum supported version {}",
+                    protocol_version,
+                    crate::core::protocol::MIN_SUPPORTED_PROTOCOL_VERSION
+                ));
+            }
             let ack = crate::core::protocol::Message::HelloAck {
+                protocol_version: crate::core::protocol::PROTOCOL_VERSION,
                 peer_id: our_peer_id.clone(),
                 name: String::new(),
                 screens: get_screens(),

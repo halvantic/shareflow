@@ -62,7 +62,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 
 ## Batch 2 — Protocol foundation (coordinate both sides before dependent fixes)
 
-### 2.1 · Add protocol version negotiation `[ ]`
+### 2.1 · Add protocol version negotiation `[x]`
 - **Severity:** Medium  
 - **Files:** `src-tauri/src/core/protocol.rs` lines 1–117; `src-tauri/src/network/server.rs` handshake  
 - **Issue:** No version field in `Hello`. Old/new clients silently diverge; new message types cause one side to wait indefinitely.  
