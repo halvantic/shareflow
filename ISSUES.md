@@ -73,14 +73,14 @@ Fix order is sequenced so foundational changes come before dependent ones.
 
 ## Batch 3 — Security: TLS trust + discovery (depends on Batch 2 for version field)
 
-### 3.1 · Implement certificate fingerprint confirmation on first connect `[ ]`
+### 3.1 · Implement certificate fingerprint confirmation on first connect `[x]`
 - **Severity:** Critical  
 - **Files:** `src-tauri/src/network/tls.rs` lines 104–107; `src-tauri/src/core/config.rs` lines 25–28  
 - **Issue:** TOFU accepts any certificate without user confirmation. First-connect MITM is trivially possible. Auto-connect ignores certificate changes for known `peer_id`.  
 - **Fix:** On unknown fingerprint, emit a UI event with the SHA-256 fingerprint and require explicit user approval before persisting. For known peers, compare live fingerprint to stored value; block and alert if changed.  
 - **Coordination:** UI change required; both peers must run the same version.
 
-### 3.2 · Sign discovery announcements with peer certificate `[ ]`
+### 3.2 · Sign discovery announcements with peer certificate `[x]`
 - **Severity:** High  
 - **Files:** `src-tauri/src/network/discovery.rs` lines 6–90  
 - **Issue:** Any LAN host can broadcast a crafted UDP packet to inject a fake peer. Timestamp window prevents replay but not continuous spoofing.  
