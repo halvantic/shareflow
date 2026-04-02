@@ -22,7 +22,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** `CFMachPortRef` and `CFRunLoopSourceRef` are released after `CFRunLoopRun()`, which never returns. Both are leaked on every capture session start.  
 - **Fix:** Move `CFRelease` calls into `stop_capture()`, immediately after `CFRunLoopStop()`.
 
-### 1.3 · macOS: remove panic-through-FFI in event tap callback `[ ]`
+### 1.3 · macOS: remove panic-through-FFI in event tap callback `[x]`
 - **Severity:** High  
 - **File:** `src-tauri/src/input/macos.rs` line 812 and all uses of `unwrap_or_else(|e| e.into_inner())` inside `event_tap_callback`  
 - **Issue:** Recovering a poisoned `Mutex` with `into_inner()` inside a C callback can unwind through the FFI boundary — undefined behaviour. Inconsistent modifier state causes stuck keys.  

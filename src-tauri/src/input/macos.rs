@@ -808,9 +808,14 @@ extern "C" fn event_tap_callback(
                     0x37 | 0x36 => (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0,
                     0x39 => (flags & 0x00010000) != 0, // Caps Lock
                     _ => {
-                        // Fall back to flag comparison if specific modifier not recognized
-                        let state = MODIFIER_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                        flags > state.prev_flags
+                        // Fall back to flag comparison if specific modifier not recognized.
+                        // Use try_lock() — never block or panic inside a C callback.
+                        if let Ok(state) = MODIFIER_STATE.try_lock() {
+                            flags > state.prev_flags
+                        } else {
+                            // Lock unavailable or poisoned: skip update, assume no change.
+                            false
+                        }
                     }
                 };
 
