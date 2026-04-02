@@ -40,7 +40,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** If keyboard hook install fails, mouse hook is unregistered but `HOOK_ACTIVE` was already set `true`; the mouse hook leaks.  
 - **Fix:** Set `HOOK_ACTIVE = true` only after both hooks succeed.
 
-### 1.6 · Windows: add timeout to stop_capture join (prevent shutdown deadlock) `[ ]`
+### 1.6 · Windows: add timeout to stop_capture join (prevent shutdown deadlock) `[x]`
 - **Severity:** High  
 - **File:** `src-tauri/src/input/windows.rs` lines 224–226  
 - **Issue:** `PostThreadMessageW` failure is silently swallowed; subsequent `join()` blocks forever if the thread is already gone.  

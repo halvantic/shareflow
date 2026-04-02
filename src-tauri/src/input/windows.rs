@@ -228,12 +228,26 @@ impl InputCapture for WindowsInputCapture {
         let tid = HOOK_THREAD_ID.load(Ordering::SeqCst);
         if tid != 0 {
             unsafe {
-                let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                if !PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)).as_bool() {
+                    // Thread may have already exited; join below will return immediately.
+                    log::warn!("PostThreadMessageW failed (tid={}); hook thread may have already exited", tid);
+                }
             }
         }
 
         if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+            // Join with a 2-second timeout: spawn a helper thread to do the blocking
+            // join, then wait on a channel with recv_timeout. If the hook thread does
+            // not exit cleanly (e.g. deadlocked message loop), we abandon the join
+            // rather than blocking the shutdown path indefinitely.
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                let _ = handle.join();
+                let _ = done_tx.send(());
+            });
+            if done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_err() {
+                log::warn!("Hook thread did not exit within 2 s — abandoning join");
+            }
         }
 
         log::info!("Windows input capture stopped");
