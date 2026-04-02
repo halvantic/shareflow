@@ -112,6 +112,13 @@ pub struct AppConfig {
     /// Configured AMT (Intel vPro) computers for remote power control.
     #[serde(default)]
     pub amt_computers: Vec<AmtComputer>,
+
+    /// Optional pairing code for challenge-response authentication with peers.
+    /// When non-empty, connecting peers must prove knowledge of this code via
+    /// HMAC-SHA256 before the session starts. Empty = no auth required (default,
+    /// backward-compatible with peers that predate this feature).
+    #[serde(default)]
+    pub pairing_code: String,
 }
 
 fn default_true() -> bool {
@@ -147,6 +154,7 @@ impl Default for AppConfig {
             preferred_ip: String::new(),
             is_first_run: false, // used as serde fallback for existing configs
             amt_computers: Vec::new(),
+            pairing_code: String::new(),
         }
     }
 }

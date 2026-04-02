@@ -35,6 +35,7 @@ lz4_flex = "0.11"
 reqwest = { version = "0.11", features = ["json"], default-features = true }
 md5 = "0.7"
 rand = "0.8"
+hmac = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

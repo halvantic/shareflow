@@ -175,149 +175,70 @@ async fn connect_to_peer_cmd(
             };
             let _ = conn.outgoing.send(ack).await;
 
-            let (msg_tx, mut msg_rx) = mpsc::channel(256);
-            let (msg_lo_tx, mut msg_lo_rx) = mpsc::channel(64);
-            let peer = crate::core::engine::Peer {
-                id: peer_id.clone(),
-                name: name.clone(),
-                screens,
-                sender: msg_tx,
-                sender_lo: msg_lo_tx,
-            };
+            // Auth handshake (4.2): v2+ servers always send an auth signal after HelloAck.
+            // AuthResult{success:true} = no pairing code required; AuthChallenge = respond with HMAC.
+            if protocol_version >= 2 {
+                let pairing_code = state.engine.config.lock().await.pairing_code.clone();
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    conn.incoming.recv(),
+                )
+                .await
+                {
+                    Ok(Some(crate::core::protocol::Message::AuthResult { success: true })) => {
+                        // Server has no pairing code — proceed.
+                    }
+                    Ok(Some(crate::core::protocol::Message::AuthResult { success: false })) => {
+                        return Err("Server rejected the connection (auth failed)".into());
+                    }
+                    Ok(Some(crate::core::protocol::Message::AuthChallenge { nonce })) => {
+                        let hash = network::auth::compute_auth_hmac(&pairing_code, &nonce);
+                        if conn
+                            .outgoing
+                            .send(crate::core::protocol::Message::AuthResponse { hash })
+                            .await
+                            .is_err()
+                        {
+                            return Err("Connection closed during auth".into());
+                        }
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            conn.incoming.recv(),
+                        )
+                        .await
+                        {
+                            Ok(Some(crate::core::protocol::Message::AuthResult {
+                                success: true,
+                            })) => {}
+                            Ok(Some(crate::core::protocol::Message::AuthResult {
+                                success: false,
+                            })) => {
+                                return Err(
+                                    "Authentication failed — check pairing code".into()
+                                );
+                            }
+                            _ => return Err("Auth result timeout or connection closed".into()),
+                        }
+                    }
+                    _ => return Err("Auth handshake failed or server disconnected".into()),
+                }
+            }
+
+            // Hand off to the shared session loop (4.1).
             let result_name = name.clone();
             let result_id = peer_id.clone();
-            state.engine.add_peer(peer).await;
-
-            // Forward hi-priority messages to connection.
-            let conn_outgoing = conn.outgoing.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = msg_rx.recv().await {
-                    if conn_outgoing.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Forward lo-priority messages to connection.
-            let conn_outgoing_lo = conn.outgoing_lo.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = msg_lo_rx.recv().await {
-                    if conn_outgoing_lo.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            let engine = state.engine.clone();
-            let remote_peer_id = peer_id.clone();
-            tokio::spawn(async move {
-                let injector = crate::input::create_injector();
-                while let Some(msg) = conn.incoming.recv().await {
-                    match msg {
-                        crate::core::protocol::Message::MouseMove(mv) => {
-                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
-                                continue;
-                            }
-                            let _ = injector.move_mouse(mv.x, mv.y);
-                            let edge_event = crate::input::InputEvent::MouseMove(mv);
-                            if let Some((peer_id, msg)) = engine.handle_local_input(edge_event).await {
-                                if let Err(e) = engine.send_to_peer(&peer_id, msg).await {
-                                    log::warn!("Failed to send edge switch: {}", e);
-                                }
-                            }
-                        }
-                        crate::core::protocol::Message::MouseButton(mb) => {
-                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
-                                continue;
-                            }
-                            if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
-                                log::error!("Mouse button injection failed: {}", e);
-                            }
-                        }
-                        crate::core::protocol::Message::MouseScroll(ms) => {
-                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
-                                continue;
-                            }
-                            if let Err(e) = injector.scroll(ms.dx, ms.dy) {
-                                log::error!("Scroll injection failed: {}", e);
-                            }
-                        }
-                        crate::core::protocol::Message::Key(ke) => {
-                            if engine.is_remote.load(std::sync::atomic::Ordering::Acquire) {
-                                continue;
-                            }
-                            if let Err(e) = injector.send_key(ke.scancode, ke.pressed) {
-                                log::error!("Key injection failed: {}", e);
-                            }
-                        }
-                        crate::core::protocol::Message::SwitchFocus {
-                            target_id,
-                            entry_x,
-                            entry_y,
-                        } => {
-                            if target_id == our_peer_id {
-                                let _ = injector.move_mouse(entry_x, entry_y);
-                                engine.switch_to_local().await;
-                                crate::input::reprime_keyboard_for_focus();
-                            }
-                        }
-                        crate::core::protocol::Message::ClipboardUpdate { content } => {
-                            if engine.config.lock().await.clipboard_sync_enabled {
-                                crate::clipboard::sync::apply_remote_clipboard(content);
-                            }
-                        }
-                        crate::core::protocol::Message::ClipboardUpdateCompressed { width, height, compressed_rgba, original_len } => {
-                            if engine.config.lock().await.clipboard_sync_enabled {
-                                match crate::core::protocol::decompress_clipboard(width, height, compressed_rgba, original_len) {
-                                    Ok(content) => crate::clipboard::sync::apply_remote_clipboard(content),
-                                    Err(e) => log::error!("Failed to decompress clipboard: {}", e),
-                                }
-                            }
-                        }
-                        crate::core::protocol::Message::ScreenUpdate { screens } => {
-                            engine.update_peer_screens(&remote_peer_id, screens).await;
-                        }
-                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {}
-                        crate::core::protocol::Message::ConfigSync { clipboard_sync_enabled } => {
-                            let mut cfg = engine.config.lock().await;
-                            if cfg.agent_mode {
-                                cfg.clipboard_sync_enabled = clipboard_sync_enabled;
-                            }
-                        }
-                        crate::core::protocol::Message::AutoNeighbor { peer_id, edge, remove } => {
-                            let screen_edge = match edge.as_str() {
-                                "left" => crate::core::config::ScreenEdge::Left,
-                                "right" => crate::core::config::ScreenEdge::Right,
-                                "top" => crate::core::config::ScreenEdge::Top,
-                                "bottom" => crate::core::config::ScreenEdge::Bottom,
-                                _ => { log::warn!("AutoNeighbor: invalid edge '{}'", edge); continue; }
-                            };
-                            let mut cfg = engine.config.lock().await;
-                            if remove {
-                                cfg.neighbors.retain(|n| !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id.is_none()));
-                            } else {
-                                cfg.neighbors.retain(|n| !(n.edge == screen_edge && n.screen_id.is_none()));
-                                cfg.neighbors.push(crate::core::config::Neighbor { peer_id, edge: screen_edge, screen_id: None });
-                            }
-                            cfg.save();
-                        }
-                        crate::core::protocol::Message::Ping => {
-                            let _ = conn
-                                .outgoing
-                                .send(crate::core::protocol::Message::Pong)
-                                .await;
-                        }
-                        msg @ crate::core::protocol::Message::FileStart { .. }
-                        | msg @ crate::core::protocol::Message::FileChunk { .. }
-                        | msg @ crate::core::protocol::Message::FileDone { .. }
-                        | msg @ crate::core::protocol::Message::FileCancel { .. } => {
-                            engine.handle_file_message(msg).await;
-                        }
-                        _ => {}
-                    }
-                }
-                engine.remove_peer(&remote_peer_id).await;
-            });
+            let (reg_tx, reg_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(network::session::run_peer_session(
+                conn,
+                state.engine.clone(),
+                our_peer_id,
+                peer_id,
+                name,
+                screens,
+                Some(reg_tx),
+            ));
+            // Wait until the peer is registered before returning so the UI reflects the connection.
+            let _ = reg_rx.await;
 
             Ok(format!("Connected to {} ({})", result_name, result_id))
         }
@@ -1029,143 +950,66 @@ async fn auto_connect_to_peer(engine: Arc<Engine>, address: &str) -> Result<Stri
             };
             let _ = conn.outgoing.send(ack).await;
 
-            let (msg_tx, mut msg_rx) = mpsc::channel(256);
-            let (msg_lo_tx, mut msg_lo_rx) = mpsc::channel(64);
-            let peer = crate::core::engine::Peer {
-                id: peer_id.clone(),
-                name: name.clone(),
-                screens,
-                sender: msg_tx,
-                sender_lo: msg_lo_tx,
-            };
+            // Auth handshake (4.2): v2+ servers always send an auth signal after HelloAck.
+            if protocol_version >= 2 {
+                let pairing_code = engine.config.lock().await.pairing_code.clone();
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    conn.incoming.recv(),
+                )
+                .await
+                {
+                    Ok(Some(crate::core::protocol::Message::AuthResult { success: true })) => {}
+                    Ok(Some(crate::core::protocol::Message::AuthResult { success: false })) => {
+                        return Err("Server rejected the connection (auth failed)".into());
+                    }
+                    Ok(Some(crate::core::protocol::Message::AuthChallenge { nonce })) => {
+                        let hash = network::auth::compute_auth_hmac(&pairing_code, &nonce);
+                        if conn
+                            .outgoing
+                            .send(crate::core::protocol::Message::AuthResponse { hash })
+                            .await
+                            .is_err()
+                        {
+                            return Err("Connection closed during auth".into());
+                        }
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            conn.incoming.recv(),
+                        )
+                        .await
+                        {
+                            Ok(Some(crate::core::protocol::Message::AuthResult {
+                                success: true,
+                            })) => {}
+                            Ok(Some(crate::core::protocol::Message::AuthResult {
+                                success: false,
+                            })) => {
+                                return Err(
+                                    "Authentication failed — check pairing code".into()
+                                );
+                            }
+                            _ => return Err("Auth result timeout or connection closed".into()),
+                        }
+                    }
+                    _ => return Err("Auth handshake failed or server disconnected".into()),
+                }
+            }
+
+            // Hand off to the shared session loop (4.1).
             let result_name = name.clone();
             let result_id = peer_id.clone();
-            engine.add_peer(peer).await;
-
-            // Forward hi-priority messages to connection.
-            let conn_outgoing = conn.outgoing.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = msg_rx.recv().await {
-                    if conn_outgoing.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Forward lo-priority messages to connection.
-            let conn_outgoing_lo = conn.outgoing_lo.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = msg_lo_rx.recv().await {
-                    if conn_outgoing_lo.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            let engine2 = engine.clone();
-            let remote_peer_id = peer_id.clone();
-            tokio::spawn(async move {
-                let injector = crate::input::create_injector();
-                while let Some(msg) = conn.incoming.recv().await {
-                    match msg {
-                        crate::core::protocol::Message::MouseMove(mv) => {
-                            if engine2.get_focus().await != FocusState::Local {
-                                continue;
-                            }
-                            let _ = injector.move_mouse(mv.x, mv.y);
-                            let edge_event = crate::input::InputEvent::MouseMove(mv);
-                            if let Some((pid, msg)) = engine2.handle_local_input(edge_event).await {
-                                if let Err(e) = engine2.send_to_peer(&pid, msg).await {
-                                    log::warn!("Failed to send edge switch: {}", e);
-                                }
-                            }
-                        }
-                        crate::core::protocol::Message::MouseButton(mb) => {
-                            if engine2.get_focus().await != FocusState::Local {
-                                continue;
-                            }
-                            let _ = injector.press_mouse_button(mb.button, mb.pressed);
-                        }
-                        crate::core::protocol::Message::MouseScroll(ms) => {
-                            if engine2.get_focus().await != FocusState::Local {
-                                continue;
-                            }
-                            let _ = injector.scroll(ms.dx, ms.dy);
-                        }
-                        crate::core::protocol::Message::Key(ke) => {
-                            if engine2.get_focus().await != FocusState::Local {
-                                continue;
-                            }
-                            let _ = injector.send_key(ke.scancode, ke.pressed);
-                        }
-                        crate::core::protocol::Message::SwitchFocus {
-                            target_id,
-                            entry_x,
-                            entry_y,
-                        } => {
-                            if target_id == our_peer_id {
-                                let _ = injector.move_mouse(entry_x, entry_y);
-                                engine2.switch_to_local().await;
-                                crate::input::reprime_keyboard_for_focus();
-                            }
-                        }
-                        crate::core::protocol::Message::ClipboardUpdate { content } => {
-                            if engine2.config.lock().await.clipboard_sync_enabled {
-                                crate::clipboard::sync::apply_remote_clipboard(content);
-                            }
-                        }
-                        crate::core::protocol::Message::ClipboardUpdateCompressed { width, height, compressed_rgba, original_len } => {
-                            if engine2.config.lock().await.clipboard_sync_enabled {
-                                match crate::core::protocol::decompress_clipboard(width, height, compressed_rgba, original_len) {
-                                    Ok(content) => crate::clipboard::sync::apply_remote_clipboard(content),
-                                    Err(e) => log::error!("Failed to decompress clipboard: {}", e),
-                                }
-                            }
-                        }
-                        crate::core::protocol::Message::ScreenUpdate { screens } => {
-                            engine2.update_peer_screens(&remote_peer_id, screens).await;
-                        }
-                        crate::core::protocol::Message::PrimaryKmDeviceSync { .. } => {}
-                        crate::core::protocol::Message::ConfigSync { clipboard_sync_enabled } => {
-                            let mut cfg = engine2.config.lock().await;
-                            if cfg.agent_mode {
-                                cfg.clipboard_sync_enabled = clipboard_sync_enabled;
-                            }
-                        }
-                        crate::core::protocol::Message::AutoNeighbor { peer_id, edge, remove } => {
-                            let screen_edge = match edge.as_str() {
-                                "left" => crate::core::config::ScreenEdge::Left,
-                                "right" => crate::core::config::ScreenEdge::Right,
-                                "top" => crate::core::config::ScreenEdge::Top,
-                                "bottom" => crate::core::config::ScreenEdge::Bottom,
-                                _ => { log::warn!("AutoNeighbor: invalid edge '{}'", edge); continue; }
-                            };
-                            let mut cfg = engine2.config.lock().await;
-                            if remove {
-                                cfg.neighbors.retain(|n| !(n.peer_id == peer_id && n.edge == screen_edge && n.screen_id.is_none()));
-                            } else {
-                                cfg.neighbors.retain(|n| !(n.edge == screen_edge && n.screen_id.is_none()));
-                                cfg.neighbors.push(crate::core::config::Neighbor { peer_id, edge: screen_edge, screen_id: None });
-                            }
-                            cfg.save();
-                        }
-                        crate::core::protocol::Message::Ping => {
-                            let _ = conn
-                                .outgoing
-                                .send(crate::core::protocol::Message::Pong)
-                                .await;
-                        }
-                        msg @ crate::core::protocol::Message::FileStart { .. }
-                        | msg @ crate::core::protocol::Message::FileChunk { .. }
-                        | msg @ crate::core::protocol::Message::FileDone { .. }
-                        | msg @ crate::core::protocol::Message::FileCancel { .. } => {
-                            engine2.handle_file_message(msg).await;
-                        }
-                        _ => {}
-                    }
-                }
-                engine2.remove_peer(&remote_peer_id).await;
-            });
+            let (reg_tx, reg_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(network::session::run_peer_session(
+                conn,
+                engine,
+                our_peer_id,
+                peer_id,
+                name,
+                screens,
+                Some(reg_tx),
+            ));
+            let _ = reg_rx.await;
 
             Ok(format!("Connected to {} ({})", result_name, result_id))
         }

@@ -9,7 +9,9 @@ pub type PeerId = String;
 ///
 /// Version history:
 ///   1 — initial versioned protocol (Hello/HelloAck gain protocol_version field)
-pub const PROTOCOL_VERSION: u16 = 1;
+///   2 — pairing-code auth handshake (AuthChallenge/AuthResponse/AuthResult
+///       exchanged after HelloAck; both sides must agree on the flow)
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Oldest protocol version this build will accept from a remote peer.
 /// Connections with a lower version are rejected with a clear error message
