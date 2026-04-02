@@ -28,7 +28,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** Recovering a poisoned `Mutex` with `into_inner()` inside a C callback can unwind through the FFI boundary — undefined behaviour. Inconsistent modifier state causes stuck keys.  
 - **Fix:** Replace every `unwrap_or_else(|e| e.into_inner())` inside the callback with `.try_lock()`; skip the update and log a warning if unavailable or poisoned.
 
-### 1.4 · Windows: log SendInput failures `[ ]`
+### 1.4 · Windows: log SendInput failures `[x]`
 - **Severity:** High  
 - **File:** `src-tauri/src/input/windows.rs` lines 708, 729, 745, 781, 812  
 - **Issue:** `SendInput()` return value is discarded; silent injection failures give no diagnostic signal.  

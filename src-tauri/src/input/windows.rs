@@ -705,7 +705,9 @@ impl InputInjector for WindowsInputInjector {
                     },
                 },
             };
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+                log::warn!("SendInput failed for mouse button event (button={:?}, pressed={})", button, pressed);
+            }
         }
         Ok(())
     }
@@ -726,7 +728,9 @@ impl InputInjector for WindowsInputInjector {
                         },
                     },
                 };
-                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+                    log::warn!("SendInput failed for vertical scroll (dy={})", dy);
+                }
             }
             if dx != 0 {
                 let input = INPUT {
@@ -742,7 +746,9 @@ impl InputInjector for WindowsInputInjector {
                         },
                     },
                 };
-                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+                    log::warn!("SendInput failed for horizontal scroll (dx={})", dx);
+                }
             }
         }
         Ok(())
@@ -778,7 +784,9 @@ impl InputInjector for WindowsInputInjector {
                         },
                     },
                 };
-                SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+                    log::warn!("SendInput failed for toggle key (vk=0x{:X}, pressed={})", vk, pressed);
+                }
             }
             return Ok(());
         }
@@ -809,7 +817,9 @@ impl InputInjector for WindowsInputInjector {
                     },
                 },
             };
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+                log::warn!("SendInput failed for key (scancode=0x{:X}, pressed={})", actual_scan, pressed);
+            }
         }
         Ok(())
     }
