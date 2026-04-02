@@ -119,7 +119,11 @@ impl InputCapture for WindowsInputCapture {
         let _ = CLIPBOARD_CHANGE_SENDER.set(clip_tx);
         self.clipboard_change_receiver = Some(clip_rx);
 
-        HOOK_ACTIVE.store(true, Ordering::SeqCst);
+        // HOOK_ACTIVE is set to true inside the thread, only after BOTH hooks
+        // succeed. Setting it here (before spawn) would create a window where
+        // the flag is true but no hooks are installed, and would also incorrectly
+        // leave HOOK_ACTIVE=true if the keyboard hook install fails after the
+        // mouse hook succeeds.
 
         let handle = std::thread::spawn(|| {
             // Store thread ID so we can post WM_QUIT to stop cleanly.
@@ -131,7 +135,7 @@ impl InputCapture for WindowsInputCapture {
                     Ok(h) => h,
                     Err(e) => {
                         log::error!("Failed to set mouse hook: {:?}", e);
-                        HOOK_ACTIVE.store(false, Ordering::SeqCst);
+                        // HOOK_ACTIVE was never set true; nothing to clean up.
                         return;
                     }
                 };
@@ -139,12 +143,14 @@ impl InputCapture for WindowsInputCapture {
                     Ok(h) => h,
                     Err(e) => {
                         log::error!("Failed to set keyboard hook: {:?}", e);
+                        // Mouse hook was installed; remove it before returning.
                         let _ = UnhookWindowsHookEx(mouse_hook);
-                        HOOK_ACTIVE.store(false, Ordering::SeqCst);
                         return;
                     }
                 };
 
+                // Both hooks installed — now safe to advertise as active.
+                HOOK_ACTIVE.store(true, Ordering::SeqCst);
                 log::info!("Low-level hooks installed on thread {}", tid);
 
                 // Create a message-only window (HWND_MESSAGE parent) for clipboard

@@ -34,7 +34,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** `SendInput()` return value is discarded; silent injection failures give no diagnostic signal.  
 - **Fix:** Capture return value; `log::warn!` when fewer events were injected than requested.
 
-### 1.5 · Windows: fix dangling mouse hook on keyboard hook install failure `[ ]`
+### 1.5 · Windows: fix dangling mouse hook on keyboard hook install failure `[x]`
 - **Severity:** High  
 - **File:** `src-tauri/src/input/windows.rs` lines 129–145  
 - **Issue:** If keyboard hook install fails, mouse hook is unregistered but `HOOK_ACTIVE` was already set `true`; the mouse hook leaks.  
