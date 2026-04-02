@@ -198,6 +198,9 @@ impl AppConfig {
                     computer.password = crate::credentials::decrypt_credential(&computer.password);
                 }
 
+                // Normalize any invalid state combinations.
+                changed |= config.validate();
+
                 if changed {
                     config.save();
                 }
@@ -211,6 +214,25 @@ impl AppConfig {
                 config
             }
         }
+    }
+
+    /// Enforce invariants that must always hold.
+    /// Returns true if any field was modified (caller should save).
+    pub fn validate(&mut self) -> bool {
+        let mut changed = false;
+        // Agent mode machines must never be the primary K+M device — they receive
+        // control rather than send it. Silently correct if both are set true.
+        if self.agent_mode && self.is_primary_km_device {
+            log::warn!("Config invalid: agent_mode=true with is_primary_km_device=true — forcing is_primary_km_device=false");
+            self.is_primary_km_device = false;
+            changed = true;
+        }
+        // Agent mode without a host address is a misconfiguration — log a warning
+        // but don't block startup; the user can fix it in settings.
+        if self.agent_mode && self.host_address.is_empty() {
+            log::warn!("Config warning: agent_mode=true but host_address is empty — auto-connect will be skipped");
+        }
+        changed
     }
 
     /// Save config to disk atomically (write to temp file then rename).

@@ -598,8 +598,14 @@ async fn power_on_amt_computer(
         .clone();
     drop(config);
 
-    let controller = amt::AmtController::new(computer.host, computer.port, computer.username, computer.password);
-    controller.power_on().await
+    log::info!("AMT power-on initiated for '{}' ({})", computer.name, computer.host);
+    let controller = amt::AmtController::new(computer.host.clone(), computer.port, computer.username, computer.password);
+    let result = controller.power_on().await;
+    match &result {
+        Ok(msg) => log::info!("AMT power-on success for '{}': {}", computer.name, msg),
+        Err(e)  => log::warn!("AMT power-on failed for '{}': {}", computer.name, e),
+    }
+    result
 }
 
 #[tauri::command]

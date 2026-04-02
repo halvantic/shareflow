@@ -28,7 +28,16 @@ pub async fn start_input_loop(
     let mut cmd_held = false;
     let mut last_focus = engine.get_focus().await;
 
+    // Hotkey detector: default combo is Scroll Lock (0x46) → switches focus to Local.
+    let hotkey = crate::core::hotkey::HotkeyDetector::new();
+
     while let Some(event) = event_rx.recv().await {
+        // Check hotkey first — fires regardless of focus state so the user can
+        // always escape remote focus even if normal edge-switch logic is blocked.
+        if hotkey.process(&event) {
+            engine.switch_to_local().await;
+            continue;
+        }
         // Check if focus changed — if so, reset modifiers to prevent stale keys
         // after device switching (e.g., Ctrl held on Windows, key-up on Mac).
         // Use the atomic flag to avoid a mutex lock on every event; only acquire
