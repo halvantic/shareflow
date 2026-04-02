@@ -228,7 +228,7 @@ impl InputCapture for WindowsInputCapture {
         let tid = HOOK_THREAD_ID.load(Ordering::SeqCst);
         if tid != 0 {
             unsafe {
-                if !PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)).as_bool() {
+                if PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)).is_err() {
                     // Thread may have already exited; join below will return immediately.
                     log::warn!("PostThreadMessageW failed (tid={}); hook thread may have already exited", tid);
                 }
