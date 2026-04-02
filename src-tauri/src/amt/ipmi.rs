@@ -1,5 +1,6 @@
 /// WS-Management (WSMAN) Power Control for Intel AMT
 /// Uses HTTP Digest Auth to connect to Intel AMT port 16992
+use rand::Rng;
 use reqwest::Client;
 use std::time::Duration;
 
@@ -150,6 +151,18 @@ fn compute_digest_auth(
     let opaque = extract_digest_param(www_auth, "opaque");
     let qop = extract_digest_param(www_auth, "qop");
 
+    // Validate the algorithm field. We support MD5 and MD5-sess; reject anything
+    // else (e.g. SHA-256) rather than silently computing the wrong hash.
+    // Absence of the field implies MD5 per RFC 2617 §3.2.1.
+    let algorithm = extract_digest_param(www_auth, "algorithm")
+        .unwrap_or_else(|| "MD5".to_string());
+    if !algorithm.eq_ignore_ascii_case("MD5") && !algorithm.eq_ignore_ascii_case("MD5-sess") {
+        return Err(format!(
+            "Unsupported digest algorithm '{}' — only MD5 is supported",
+            algorithm
+        ));
+    }
+
     // Extract uri path (e.g., "/wsman" from "http://10.0.80.10:16992/wsman")
     let uri_path = if let Some(after_host) = uri.split("://").nth(1) {
         // Skip past the host:port to get /path
@@ -173,8 +186,11 @@ fn compute_digest_auth(
     // Compute response: MD5(HA1:nonce:HA2)
     // For qop=auth: MD5(HA1:nonce:nc:cnonce:qop:HA2)
     let response = if qop.as_deref() == Some("auth") {
+        // Generate a cryptographically random cnonce per RFC 2617 §3.2.2.
+        // A hardcoded cnonce makes captured Authorization headers replayable
+        // indefinitely, completely defeating digest authentication.
+        let cnonce: String = format!("{:016x}", rand::thread_rng().gen::<u64>());
         let nc = "00000001";
-        let cnonce = "0a4f113b";
         let response_input = format!("{}:{}:{}:{}:auth:{}", ha1, nonce, nc, cnonce, ha2);
         format!(
             "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{:x}\", opaque=\"{}\", qop=auth, nc={}, cnonce=\"{}\"",
@@ -197,7 +213,7 @@ fn compute_digest_auth(
         )
     };
 
-    log::debug!("AMT: Computed digest auth header");
+    log::debug!("AMT: Computed digest auth header (algorithm={})", algorithm);
     Ok(response)
 }
 

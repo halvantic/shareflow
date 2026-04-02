@@ -52,7 +52,7 @@ Fix order is sequenced so foundational changes come before dependent ones.
 - **Issue:** A `0xFFFFFFFF` length prefix triggers a multi-GB allocation before the 16 MB pending buffer cap is checked. Clipboard image width/height not validated before LZ4 decompress.  
 - **Fix:** Reject length prefix > 64 MB immediately. Before decompressing clipboard images, validate `width × height × 4 ≤ 512 MB`.
 
-### 1.8 · IPMI digest auth: random cnonce + validate algorithm `[ ]`
+### 1.8 · IPMI digest auth: random cnonce + validate algorithm `[x]`
 - **Severity:** Critical  
 - **File:** `src-tauri/src/amt/ipmi.rs` lines 136–202 (line 177 for cnonce)  
 - **Issue:** `cnonce` is hardcoded `"0a4f113b"`; `nc` is always `"00000001"`. Captured Authorization header is replayable indefinitely. `algorithm` field from server challenge is never parsed; always uses MD5.  
