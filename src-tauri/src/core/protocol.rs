@@ -103,6 +103,15 @@ pub enum Message {
         reason: String,
     },
 
+    /// File transfer: SHA-256 integrity check.
+    /// Sent by the sender just before FileDone. Receivers that understand this
+    /// message verify the hash; older receivers ignore it (graceful degradation).
+    FileIntegrity {
+        transfer_id: String,
+        /// Raw SHA-256 digest bytes (32 bytes).
+        sha256: Vec<u8>,
+    },
+
     /// Notify peers that our screen configuration has changed (e.g. after wake).
     ScreenUpdate {
         screens: Vec<ScreenInfo>,

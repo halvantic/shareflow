@@ -528,6 +528,9 @@ impl Engine {
                 log::warn!("File transfer cancelled: {} - {}", transfer_id, reason);
                 self.file_receiver.cancel(&transfer_id);
             }
+            Message::FileIntegrity { transfer_id, sha256 } => {
+                self.file_receiver.set_integrity(&transfer_id, sha256);
+            }
             _ => {}
         }
     }

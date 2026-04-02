@@ -279,7 +279,8 @@ pub async fn run_peer_session(
             msg @ Message::FileStart { .. }
             | msg @ Message::FileChunk { .. }
             | msg @ Message::FileDone { .. }
-            | msg @ Message::FileCancel { .. } => {
+            | msg @ Message::FileCancel { .. }
+            | msg @ Message::FileIntegrity { .. } => {
                 engine.handle_file_message(msg).await;
             }
             _ => {}

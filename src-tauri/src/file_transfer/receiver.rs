@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Seek, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use sha2::{Sha256, Digest};
 
 use super::receive_dir;
 
@@ -12,6 +13,8 @@ struct IncomingFile {
     received: u64,
     path: PathBuf,
     writer: std::fs::File,
+    /// Expected SHA-256 hash from the sender's FileIntegrity message (if provided).
+    expected_sha256: Option<Vec<u8>>,
 }
 
 /// Manages incoming file transfers.
@@ -72,6 +75,7 @@ impl FileReceiver {
             received: 0,
             path: path.clone(),
             writer,
+            expected_sha256: None,
         };
 
         self.transfers
@@ -131,7 +135,16 @@ impl FileReceiver {
         Ok((incoming.received, incoming.file_size, incoming.file_name.clone()))
     }
 
-    /// Finalize a completed transfer. Returns error if not all bytes were received.
+    /// Record the expected SHA-256 hash from the sender's FileIntegrity message.
+    pub fn set_integrity(&self, transfer_id: &str, sha256: Vec<u8>) {
+        let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(incoming) = transfers.get_mut(transfer_id) {
+            incoming.expected_sha256 = Some(sha256);
+        }
+    }
+
+    /// Finalize a completed transfer. Returns error if not all bytes were received
+    /// or if the SHA-256 hash does not match the sender's FileIntegrity value.
     pub fn finish(&self, transfer_id: &str) -> Result<(String, PathBuf, u64), String> {
         let mut transfers = self.transfers.lock().unwrap_or_else(|e| e.into_inner());
         let incoming = transfers
@@ -140,7 +153,6 @@ impl FileReceiver {
 
         // Validate that we actually received all the data we expected.
         if incoming.received < incoming.file_size {
-            // Partial file on disk — remove it to avoid leaving junk files.
             drop(incoming.writer);
             let _ = std::fs::remove_file(&incoming.path);
             return Err(format!(
@@ -149,8 +161,24 @@ impl FileReceiver {
             ));
         }
 
-        // Flush is handled by drop, but let's be explicit
+        // Flush before reading back for hash verification.
         drop(incoming.writer);
+
+        // Verify SHA-256 integrity if the sender provided a hash.
+        if let Some(expected) = &incoming.expected_sha256 {
+            let actual = hash_file(&incoming.path)?;
+            if actual != *expected {
+                let _ = std::fs::remove_file(&incoming.path);
+                return Err(format!(
+                    "Transfer {} integrity check failed — file may be corrupted or tampered",
+                    transfer_id
+                ));
+            }
+            log::info!(
+                "File integrity verified: {} ({} bytes)",
+                incoming.file_name, incoming.received
+            );
+        }
 
         log::info!(
             "File received: {} ({} bytes) at {:?}",
@@ -186,4 +214,21 @@ impl FileReceiver {
             log::warn!("Cancelled {} abandoned file transfer(s) due to peer disconnect", count);
         }
     }
+}
+
+/// Compute the SHA-256 hash of a file on disk.
+fn hash_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open file for hash verification: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| format!("Read error during hash: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_vec())
 }

@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::Path;
+use sha2::{Sha256, Digest};
 use tokio::sync::mpsc;
 
 use crate::core::engine::Engine;
@@ -56,6 +57,7 @@ pub async fn send_file(
     let mut chunk_buf = vec![0u8; CHUNK_SIZE];
 
     let mut offset: u64 = 0;
+    let mut hasher = Sha256::new();
     loop {
         let bytes_read = reader.read(&mut chunk_buf)
             .map_err(|e| format!("Failed to read file: {}", e))?;
@@ -63,13 +65,16 @@ pub async fn send_file(
             break;
         }
 
+        let chunk = &chunk_buf[..bytes_read];
+        hasher.update(chunk);
+
         engine
             .send_to_peer_lo(
                 peer_id,
                 Message::FileChunk {
                     transfer_id: transfer_id.clone(),
                     offset,
-                    data: chunk_buf[..bytes_read].to_vec(),
+                    data: chunk.to_vec(),
                 },
             )
             .await?;
@@ -87,6 +92,18 @@ pub async fn send_file(
             })
             .await;
     }
+
+    // Send integrity hash before FileDone so the receiver can verify.
+    let sha256 = hasher.finalize().to_vec();
+    engine
+        .send_to_peer_lo(
+            peer_id,
+            Message::FileIntegrity {
+                transfer_id: transfer_id.clone(),
+                sha256,
+            },
+        )
+        .await?;
 
     // Send FileDone
     engine
