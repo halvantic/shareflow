@@ -449,10 +449,7 @@ fn mac_vk_to_scancode(vk: u16) -> u16 {
         0x7C => 0x14D, // Right Arrow
         0x7D => 0x150, // Down Arrow
         0x7E => 0x148, // Up Arrow
-        _ => {
-            log::debug!("Unknown macOS VK 0x{:X}, passing through as-is", vk);
-            0 // Return 0 (no valid scancode) for unmapped keys
-        }
+        _ => 0, // Unmapped; callers check for 0 and log a warning before sending
     }
 }
 
@@ -590,6 +587,10 @@ fn modifier_flags_for_vk(vk: u16) -> Option<(u64, u64)> {
         0x3D => Some((KCG_EVENT_FLAG_MASK_ALTERNATE, NX_DEVICERALTKEYMASK)),   // Right Option
         0x37 => Some((KCG_EVENT_FLAG_MASK_COMMAND, NX_DEVICELCMDKEYMASK)),     // Left Command
         0x36 => Some((KCG_EVENT_FLAG_MASK_COMMAND, NX_DEVICERCMDKEYMASK)),     // Right Command
+        // Caps Lock — uses kCGEventFlagMaskAlphaShift; handled via inject_caps_lock
+        // in send_key() before this function is consulted, but listed here so any
+        // future caller of modifier_flags_for_vk gets the correct flag pair.
+        0x39 => Some((KCG_EVENT_FLAG_MASK_ALPHA_SHIFT, KCG_EVENT_FLAG_MASK_ALPHA_SHIFT)),
         _ => None,
     }
 }
@@ -776,20 +777,22 @@ extern "C" fn event_tap_callback(
                 if should_send {
                     let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
                     let scancode = mac_vk_to_scancode(vk);
-                    let _ = sender.send(InputEvent::Key(KeyEvent {
-                        scancode,
-                        pressed: true,
-                    }));
+                    if scancode == 0 {
+                        log::warn!("Unmapped macOS VK 0x{:X} on key-down — dropping", vk);
+                    } else {
+                        let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed: true }));
+                    }
                 }
             }
             KCG_EVENT_KEY_UP => {
                 if should_send {
                     let vk = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) as u16;
                     let scancode = mac_vk_to_scancode(vk);
-                    let _ = sender.send(InputEvent::Key(KeyEvent {
-                        scancode,
-                        pressed: false,
-                    }));
+                    if scancode == 0 {
+                        log::warn!("Unmapped macOS VK 0x{:X} on key-up — dropping", vk);
+                    } else {
+                        let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed: false }));
+                    }
                 }
             }
 
@@ -806,7 +809,7 @@ extern "C" fn event_tap_callback(
                     0x3B | 0x3E => (flags & KCG_EVENT_FLAG_MASK_CONTROL) != 0,
                     0x3A | 0x3D => (flags & KCG_EVENT_FLAG_MASK_ALTERNATE) != 0,
                     0x37 | 0x36 => (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0,
-                    0x39 => (flags & 0x00010000) != 0, // Caps Lock
+                    0x39 => (flags & KCG_EVENT_FLAG_MASK_ALPHA_SHIFT) != 0, // Caps Lock
                     _ => {
                         // Fall back to flag comparison if specific modifier not recognized.
                         // Use try_lock() — never block or panic inside a C callback.
@@ -825,7 +828,11 @@ extern "C" fn event_tap_callback(
                 }
 
                 if should_send {
-                    let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
+                    if scancode == 0 {
+                        log::warn!("Unmapped macOS modifier VK 0x{:X} on flags-changed — dropping", vk);
+                    } else {
+                        let _ = sender.send(InputEvent::Key(KeyEvent { scancode, pressed }));
+                    }
                 }
             }
 
@@ -965,6 +972,10 @@ unsafe fn run_event_tap() {
     let _ = RUN_LOOP_REF.set(RunLoopRef(run_loop));
     let _ = RUN_LOOP_SOURCE_REF.set(RunLoopSourceRef(run_loop_source));
 
+    // Signal that the tap is active. prime_keyboard() waits on this flag before
+    // posting its warm-up Shift event to avoid the event being silently dropped.
+    EVENT_TAP_READY.store(true, Ordering::Release);
+
     log::info!("macOS event tap started — capturing input events");
     CFRunLoopRun();
     // CFRunLoopRun() returns only when stop_capture() calls CFRunLoopStop().
@@ -1014,6 +1025,12 @@ impl InputCapture for MacOSInputCapture {
 }
 
 // --- Input Injection ---
+
+/// Set to true by run_event_tap() once CGEventTapEnable() has been called.
+/// prime_keyboard() waits on this flag so that the warm-up Shift event is not
+/// posted before the HID tap is listening, which would cause it to be silently
+/// dropped and leave the keyboard pipeline un-primed.
+static EVENT_TAP_READY: AtomicBool = AtomicBool::new(false);
 
 /// Whether the HID keyboard system has been primed with a warm-up event.
 /// On macOS, CGEventPost to the HID tap can silently drop the first few
@@ -1109,6 +1126,18 @@ impl MacOSInputInjector {
     fn prime_keyboard() {
         if KEYBOARD_PRIMED.swap(true, Ordering::SeqCst) {
             return; // Already primed
+        }
+        // Wait for the event tap to be running before posting. The tap thread is
+        // spawned by new_with_channel() and sets EVENT_TAP_READY once CGEventTapEnable
+        // returns. Without this wait, the warm-up event is posted before the tap is
+        // installed and silently dropped — leaving the keyboard pipeline un-primed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !EVENT_TAP_READY.load(Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                log::warn!("Event tap not ready after 2 s — sending prime key anyway");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         unsafe {
             let source = create_event_source();
@@ -1304,10 +1333,33 @@ impl InputInjector for MacOSInputInjector {
     }
 
     fn scroll(&self, dx: i32, dy: i32) -> Result<(), String> {
+        // Accumulate fractional lines across calls to preserve sub-notch precision.
+        // Without this, trackpad deltas (e.g. 40/120 of a line) are rounded to ±1
+        // on every call, making three 40-delta events produce 3 lines instead of 1.
+        use std::cell::Cell;
+        thread_local! {
+            static ACCUM_DY: Cell<f64> = Cell::new(0.0);
+            static ACCUM_DX: Cell<f64> = Cell::new(0.0);
+        }
+        const WHEEL_DELTA: f64 = 120.0;
+        ACCUM_DY.with(|a| a.set(a.get() + dy as f64 / WHEEL_DELTA));
+        ACCUM_DX.with(|a| a.set(a.get() + dx as f64 / WHEEL_DELTA));
+        let line_dy = ACCUM_DY.with(|a| {
+            let v = a.get();
+            let i = v.trunc() as i32;
+            a.set(v.fract());
+            i
+        });
+        let line_dx = ACCUM_DX.with(|a| {
+            let v = a.get();
+            let i = v.trunc() as i32;
+            a.set(v.fract());
+            i
+        });
+        if line_dy == 0 && line_dx == 0 {
+            return Ok(());
+        }
         unsafe {
-            // Convert from WHEEL_DELTA convention (120 per notch) to lines
-            let line_dy = if dy.abs() >= 120 { dy / 120 } else { dy.signum() };
-            let line_dx = if dx.abs() >= 120 { dx / 120 } else { dx.signum() };
             let source = create_event_source();
             let event = CGEventCreateScrollWheelEvent2(
                 source,

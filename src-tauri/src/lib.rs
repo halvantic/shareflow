@@ -66,7 +66,12 @@ fn save_config(state: tauri::State<'_, AppState>, config: AppConfig) -> Result<(
         current.save();
         let km = current.is_primary_km_device && !current.agent_mode;
         drop(current);
-        engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
+        engine.primary_km.store(km, std::sync::atomic::Ordering::SeqCst);
+        // Force back to Local immediately if no longer the primary K+M device
+        // so input suppression is never left active on a non-controlling machine.
+        if !km {
+            engine.switch_to_local().await;
+        }
     });
     Ok(())
 }
@@ -474,7 +479,10 @@ async fn update_settings(
         }
     }
 
-    state.engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
+    state.engine.primary_km.store(km, std::sync::atomic::Ordering::SeqCst);
+    if !km {
+        state.engine.switch_to_local().await;
+    }
     Ok(())
 }
 
@@ -503,7 +511,10 @@ async fn complete_setup(
     config.save();
     let km = config.is_primary_km_device && !config.agent_mode;
     drop(config);
-    state.engine.primary_km.store(km, std::sync::atomic::Ordering::Relaxed);
+    state.engine.primary_km.store(km, std::sync::atomic::Ordering::SeqCst);
+    if !km {
+        state.engine.switch_to_local().await;
+    }
     Ok(())
 }
 

@@ -9,6 +9,48 @@ use crate::network::connection::PeerConnection;
 /// Sentinel x-coordinate used to skip move injection after mouse-move coalescing.
 const SKIP_MOVE_SENTINEL: i32 = i32::MIN;
 
+/// Token-bucket rate limiter for incoming input events.
+/// Allows up to 200 events/sec sustained with a burst of 50.
+/// Excess events are dropped and a warning is logged (at most once per second).
+struct InputRateLimiter {
+    tokens: f64,
+    last_refill: std::time::Instant,
+    violations: u64,
+    last_violation_log: std::time::Instant,
+}
+
+const INPUT_RATE_PER_SEC: f64 = 200.0;
+const INPUT_RATE_BURST: f64 = 50.0;
+
+impl InputRateLimiter {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self { tokens: INPUT_RATE_BURST, last_refill: now, violations: 0, last_violation_log: now }
+    }
+
+    fn allow(&mut self, peer_id: &str) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * INPUT_RATE_PER_SEC).min(INPUT_RATE_BURST);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            self.violations += 1;
+            if now.duration_since(self.last_violation_log).as_secs() >= 1 {
+                log::warn!(
+                    "Peer {} exceeded input rate limit: {} events dropped in last second",
+                    peer_id, self.violations
+                );
+                self.violations = 0;
+                self.last_violation_log = now;
+            }
+            false
+        }
+    }
+}
+
 /// Run a complete peer session to completion.
 ///
 /// Registers the peer with the engine, sets up forwarding and keepalive tasks,
@@ -103,10 +145,14 @@ pub async fn run_peer_session(
     let injector = crate::input::create_injector();
     let pong_tx = conn.outgoing.clone();
     let mut incoming = conn.incoming;
+    let mut rate_limiter = InputRateLimiter::new();
 
     while let Some(msg) = incoming.recv().await {
         match msg {
             Message::MouseMove(mut mv) => {
+                if !rate_limiter.allow(&remote_peer_id) {
+                    continue;
+                }
                 if engine.is_remote.load(Ordering::Acquire) {
                     continue;
                 }
@@ -161,6 +207,9 @@ pub async fn run_peer_session(
                 }
             }
             Message::MouseButton(mb) => {
+                if !rate_limiter.allow(&remote_peer_id) {
+                    continue;
+                }
                 if !engine.is_remote.load(Ordering::Acquire) {
                     if let Err(e) = injector.press_mouse_button(mb.button, mb.pressed) {
                         log::error!("Mouse button injection failed: {}", e);
@@ -168,6 +217,9 @@ pub async fn run_peer_session(
                 }
             }
             Message::MouseScroll(ms) => {
+                if !rate_limiter.allow(&remote_peer_id) {
+                    continue;
+                }
                 if !engine.is_remote.load(Ordering::Acquire) {
                     if let Err(e) = injector.scroll(ms.dx, ms.dy) {
                         log::error!("Scroll injection failed: {}", e);
@@ -175,6 +227,9 @@ pub async fn run_peer_session(
                 }
             }
             Message::Key(ke) => {
+                if !rate_limiter.allow(&remote_peer_id) {
+                    continue;
+                }
                 if !engine.is_remote.load(Ordering::Acquire) {
                     crate::diag(format!(
                         "RX key sc=0x{:X} pressed={}",

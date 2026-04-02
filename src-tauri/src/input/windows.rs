@@ -75,10 +75,27 @@ static WARP_CENTER_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 static WARP_CENTER_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Remote screen bounds for clamping virtual position.
-static REMOTE_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-static REMOTE_TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-static REMOTE_RIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1920);
-static REMOTE_BOTTOM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1080);
+///
+/// Packed as two AtomicU64 so each pair (left+top, right+bottom) is read
+/// atomically, preventing a torn-read where the hook sees left from before an
+/// update and right from after. Four separate AtomicI32 stores can interleave
+/// with the hook's four loads producing a temporarily inconsistent rectangle.
+///
+/// Encoding: high 32 bits = first value (as u32 bit-cast), low 32 bits = second.
+static REMOTE_BOUNDS_LT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0); // left=0, top=0
+static REMOTE_BOUNDS_RB: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new((1920u64 << 32) | 1080u64); // right=1920, bottom=1080
+
+#[inline(always)]
+fn pack_bounds(a: i32, b: i32) -> u64 {
+    ((a as u32 as u64) << 32) | (b as u32 as u64)
+}
+
+#[inline(always)]
+fn unpack_bounds(v: u64) -> (i32, i32) {
+    ((v >> 32) as u32 as i32, (v & 0xFFFF_FFFF) as u32 as i32)
+}
 
 pub struct WindowsInputCapture {
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -277,12 +294,13 @@ impl WindowsInputCapture {
 /// Enable or disable input suppression.
 /// When suppressing, captured events are consumed and not passed to the local OS.
 pub fn set_suppress(suppress: bool) {
-    let prev = SUPPRESS.swap(suppress, Ordering::SeqCst);
+    let prev = SUPPRESS.load(Ordering::SeqCst);
     if prev != suppress {
         crate::diag(format!("Input suppression: {} → {}", prev, suppress));
-        // Hide the cursor while controlling a remote machine so it doesn't
-        // visibly jitter at the warp-center point. ShowCursor uses a reference
-        // counter so one hide must be paired with exactly one show.
+        // Complete the ShowCursor loop BEFORE writing SUPPRESS so that the hook
+        // never reads SUPPRESS=true while the cursor is still visible (or vice
+        // versa). ShowCursor uses a reference counter so one hide must be paired
+        // with exactly one show.
         unsafe {
             if suppress {
                 // Loop until the counter goes negative (cursor actually hidden).
@@ -292,6 +310,7 @@ pub fn set_suppress(suppress: bool) {
                 while ShowCursor(true) < 0 {}
             }
         }
+        SUPPRESS.store(suppress, Ordering::SeqCst);
     }
 }
 
@@ -399,10 +418,8 @@ pub fn set_peers_connected(connected: bool) {
 /// Update remote screen bounds without resetting virtual cursor or warping.
 /// Used when the remote peer's display configuration changes mid-session.
 pub fn update_remote_bounds(rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
-    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
-    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
-    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
-    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
+    REMOTE_BOUNDS_LT.store(pack_bounds(rs_x, rs_y), Ordering::SeqCst);
+    REMOTE_BOUNDS_RB.store(pack_bounds(rs_x + rs_w, rs_y + rs_h), Ordering::SeqCst);
     log::info!("Remote bounds updated: {}x{} @ ({},{})", rs_w, rs_h, rs_x, rs_y);
 }
 
@@ -412,10 +429,8 @@ pub fn update_remote_bounds(rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
 pub fn init_remote_mouse(virtual_x: i32, virtual_y: i32, rs_x: i32, rs_y: i32, rs_w: i32, rs_h: i32) {
     VIRTUAL_X.store(virtual_x, Ordering::SeqCst);
     VIRTUAL_Y.store(virtual_y, Ordering::SeqCst);
-    REMOTE_LEFT.store(rs_x, Ordering::SeqCst);
-    REMOTE_TOP.store(rs_y, Ordering::SeqCst);
-    REMOTE_RIGHT.store(rs_x + rs_w, Ordering::SeqCst);
-    REMOTE_BOTTOM.store(rs_y + rs_h, Ordering::SeqCst);
+    REMOTE_BOUNDS_LT.store(pack_bounds(rs_x, rs_y), Ordering::SeqCst);
+    REMOTE_BOUNDS_RB.store(pack_bounds(rs_x + rs_w, rs_y + rs_h), Ordering::SeqCst);
     unsafe {
         let mut pt: POINT = std::mem::zeroed();
         let _ = GetCursorPos(&mut pt);
@@ -467,11 +482,11 @@ unsafe extern "system" fn mouse_hook_proc(
                 let mut vx = VIRTUAL_X.load(Ordering::SeqCst) + dx;
                 let mut vy = VIRTUAL_Y.load(Ordering::SeqCst) + dy;
 
-                // Clamp to remote screen bounds to prevent drift
-                let left = REMOTE_LEFT.load(Ordering::SeqCst);
-                let top = REMOTE_TOP.load(Ordering::SeqCst);
-                let right = REMOTE_RIGHT.load(Ordering::SeqCst);
-                let bottom = REMOTE_BOTTOM.load(Ordering::SeqCst);
+                // Clamp to remote screen bounds to prevent drift.
+                // Each pair (left+top, right+bottom) is read from a single
+                // AtomicU64 so it's always internally consistent.
+                let (left, top) = unpack_bounds(REMOTE_BOUNDS_LT.load(Ordering::SeqCst));
+                let (right, bottom) = unpack_bounds(REMOTE_BOUNDS_RB.load(Ordering::SeqCst));
                 vx = vx.clamp(left, right - 1);
                 vy = vy.clamp(top, bottom - 1);
 

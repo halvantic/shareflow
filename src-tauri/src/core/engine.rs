@@ -130,7 +130,7 @@ impl Engine {
                         // where another thread could change focus between check and switch.
                         if let Some((ref peer_id, ref msg)) = result {
                             if let Message::SwitchFocus { entry_x, entry_y, .. } = msg {
-                                if self.primary_km.load(Ordering::Relaxed) {
+                                if self.primary_km.load(Ordering::SeqCst) {
                                     // Primary K+M device: switch to Remote to capture
                                     // and forward physical input to the target peer.
                                     *focus = FocusState::Remote(peer_id.to_string());

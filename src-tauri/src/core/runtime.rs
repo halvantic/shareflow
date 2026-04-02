@@ -110,7 +110,7 @@ pub async fn start_input_loop(
         // activates on that machine and it becomes completely stuck (no way
         // to control anything, no way to get back to Local).
         // Read from atomic — avoids locking config on every input event.
-        let is_primary_km = engine.primary_km.load(std::sync::atomic::Ordering::Relaxed);
+        let is_primary_km = engine.primary_km.load(std::sync::atomic::Ordering::SeqCst);
 
         if !is_primary_km {
             // If we somehow ended up in Remote focus (e.g., setting changed mid-session),

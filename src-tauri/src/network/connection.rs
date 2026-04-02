@@ -50,10 +50,19 @@ impl PeerConnection {
         // slip through between chunk flushes.
         tokio::spawn(async move {
             loop {
-                // Always drain all queued hi-priority messages first.
-                while let Ok(msg) = hi_rx.try_recv() {
-                    if write_message(&mut writer, &msg).await.is_err() {
-                        return;
+                // Drain up to 5 queued hi-priority messages before giving lo-priority a turn.
+                // Without this cap, continuous mouse traffic would starve clipboard and file
+                // transfers indefinitely.
+                let mut count = 0;
+                while count < 5 {
+                    match hi_rx.try_recv() {
+                        Ok(msg) => {
+                            if write_message(&mut writer, &msg).await.is_err() {
+                                return;
+                            }
+                            count += 1;
+                        }
+                        Err(_) => break,
                     }
                 }
 
