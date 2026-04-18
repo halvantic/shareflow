@@ -76,4 +76,15 @@ impl HotkeyDetector {
         }
         false
     }
+
+    /// Clear all pressed keys. Call after device switches to prevent stuck keys.
+    pub fn clear_pressed(&self) {
+        let mut pressed = self.pressed.lock().unwrap_or_else(|e| e.into_inner());
+        let count = pressed.len();
+        pressed.clear();
+        self.fired.store(false, Ordering::SeqCst);
+        if count > 0 {
+            log::info!("HotkeyDetector cleared {} stuck keys", count);
+        }
+    }
 }

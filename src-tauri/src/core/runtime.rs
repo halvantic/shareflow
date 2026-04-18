@@ -47,6 +47,7 @@ pub async fn start_input_loop(
         if currently_remote != was_remote {
             ctrl_held = false;
             cmd_held = false;
+            hotkey.clear_pressed();
             last_focus = engine.get_focus().await;
             log::debug!("Focus changed, reset modifier state");
         }
