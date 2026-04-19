@@ -39,7 +39,10 @@
       "Bash(npx tauri:*)",
       "Bash(grep -E \"^d|\\\\.json$|\\\\.tsx$|\\\\.ts$\")",
       "Bash(\"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\nsis\\\\ShareFlow_1.41.0_x64-setup.exe\")",
-      "Bash(\"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\nsis\\\\ShareFlow_1.42.0_x64-setup.exe\")"
+      "Bash(\"D:\\\\MK Share\\\\shareflow\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\nsis\\\\ShareFlow_1.42.0_x64-setup.exe\")",
+      "Bash(msiexec *)",
+      "Bash(tasklist)",
+      "Bash(taskkill /IM shareflow.exe /F)"
     ]
   }
 }
