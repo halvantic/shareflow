@@ -251,19 +251,17 @@ pub fn poll_clipboard_change(
         return None;
     }
 
-    // Clipboard changed — update our tracking state.
-    *last_known = fp.clone();
-
     // If this change was triggered by apply_remote_clipboard, suppress the broadcast
     // to prevent a loop: A→B→A→B…
-    // We must check the flag atomically with reading the content to prevent races:
-    // If another thread is calling apply_remote_clipboard simultaneously, we might
-    // have read the new clipboard content but then suppress it anyway (correct).
-    // However, if the flag was already cleared by a previous poll, we won't suppress.
-    // This is the intended behavior — each remote update sets the flag once.
+    // Check this BEFORE updating last_known to avoid state corruption when remote
+    // updates don't match the previous fingerprint. We must update last_known even
+    // for remote changes so subsequent local changes are detected properly.
     if REMOTE_SET.swap(false, Ordering::SeqCst) {
+        *last_known = fp.clone();
         return None;
     }
 
+    // Clipboard changed locally — update our tracking state and broadcast.
+    *last_known = fp.clone();
     content
 }
