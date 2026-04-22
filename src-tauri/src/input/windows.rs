@@ -293,24 +293,55 @@ impl WindowsInputCapture {
 
 /// Enable or disable input suppression.
 /// When suppressing, captured events are consumed and not passed to the local OS.
+/// Enable or disable input suppression with timeout protection.
+/// Safe to call from both sync and async contexts; uses block_in_place when
+/// running inside a tokio context to prevent deadlocking the async runtime.
 pub fn set_suppress(suppress: bool) {
     let prev = SUPPRESS.load(Ordering::SeqCst);
     if prev != suppress {
         crate::diag(format!("Input suppression: {} → {}", prev, suppress));
-        // Complete the ShowCursor loop BEFORE writing SUPPRESS so that the hook
-        // never reads SUPPRESS=true while the cursor is still visible (or vice
-        // versa). ShowCursor uses a reference counter so one hide must be paired
-        // with exactly one show.
-        unsafe {
-            if suppress {
-                // Loop until the counter goes negative (cursor actually hidden).
-                while ShowCursor(false) >= 0 {}
-            } else {
-                // Loop until the counter reaches 0 (cursor actually visible).
-                while ShowCursor(true) < 0 {}
+
+        // Try to block within the async context if available; if not, just run sync.
+        // This prevents the async runtime from being starved by the ShowCursor loop.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Running in async context: use block_in_place to prevent executor starvation.
+            let _ = tokio::task::block_in_place(|| {
+                adjust_cursor_visibility(suppress)
+            });
+        } else {
+            // Running in sync context: just call directly.
+            adjust_cursor_visibility(suppress);
+        }
+
+        SUPPRESS.store(suppress, Ordering::SeqCst);
+    }
+}
+
+/// Adjust cursor visibility to the desired state. Blocks until complete or timeout.
+/// Must be called either in a blocking context (via block_in_place) or from sync code.
+/// Caps iterations to prevent infinite loops if cursor state is corrupted.
+fn adjust_cursor_visibility(suppress: bool) {
+    const MAX_ITERATIONS: u32 = 200;
+    unsafe {
+        if suppress {
+            // Hide cursor: loop until counter goes negative (cursor actually hidden).
+            let mut iterations = 0;
+            while ShowCursor(false) >= 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+            }
+            if iterations >= MAX_ITERATIONS {
+                log::warn!("Cursor hide reached iteration limit (200) — state may be corrupted by accessibility tool or browser");
+            }
+        } else {
+            // Show cursor: loop until counter reaches non-negative (cursor actually visible).
+            let mut iterations = 0;
+            while ShowCursor(true) < 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+            }
+            if iterations >= MAX_ITERATIONS {
+                log::warn!("Cursor show reached iteration limit (200) — state may be corrupted by accessibility tool or browser");
             }
         }
-        SUPPRESS.store(suppress, Ordering::SeqCst);
     }
 }
 
