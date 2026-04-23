@@ -66,6 +66,9 @@ pub async fn start_input_loop(
             let modifier = ctrl_held || cmd_held;
             let is_copy = ke.pressed && ke.scancode == SC_C && modifier;
             let is_paste = ke.pressed && ke.scancode == SC_V && modifier;
+            if is_copy && modifier {
+                crate::diag(format!("Detected copy: scancode=0x{:X}, focus={:?}", ke.scancode, last_focus));
+            }
 
             if is_copy || is_paste {
                 // Reuse the focus already read at the top of this iteration — no extra mutex.
@@ -94,10 +97,15 @@ pub async fn start_input_loop(
                                 log::debug!("Copy handler: clipboard has no syncable content (may be files)");
                             }
                         });
+                    } else if let FocusState::Remote(ref peer_id) = focus_at_detection {
+                        // When focused on remote: after Cmd/Ctrl+C is forwarded to the remote,
+                        // also push our local clipboard to the remote so it has current content
+                        // before the copy happens on the remote machine.
+                        if let Some(content) = clipboard::sync::get_clipboard_content() {
+                            let msg = crate::core::protocol::clipboard_to_message(content);
+                            let _ = engine.send_to_peer_lo(peer_id, msg).await;
+                        }
                     }
-                    // When focus=Remote, Ctrl+C is forwarded to the remote machine.
-                    // The remote's own clipboard sync loop will detect the change and
-                    // push the new content back to us automatically.
                 }
 
                 if is_paste {

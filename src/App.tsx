@@ -349,11 +349,11 @@ function App() {
     }
   };
 
-  const handleSwitchTo = async (peerId: string) => {
+  const handleReleaseControl = async () => {
     try {
-      await invoke("switch_focus_to", { peerId });
+      await invoke("release_control");
     } catch (e: any) {
-      addLog(`Switch failed: ${e}`, "error");
+      addLog(`Release failed: ${e}`, "error");
     }
   };
 
@@ -791,16 +791,16 @@ function App() {
                 <div className="info">{peer.screens} display(s)</div>
                 <div className="info">{peer.id.slice(0, 8)}...</div>
                 <div className="peer-actions">
-                  {remotePeerId !== peer.id ? (
+                  {remotePeerId === peer.id ? (
                     <button
-                      onClick={() => handleSwitchTo(peer.id)}
-                      style={{ fontSize: 10, padding: "3px 6px" }}
+                      onClick={handleReleaseControl}
+                      style={{ fontSize: 10, padding: "3px 6px", backgroundColor: "#e94560" }}
                     >
-                      Switch To
+                      Release Control
                     </button>
                   ) : (
-                    <span style={{ fontSize: 10, color: "#e94560" }}>
-                      Active
+                    <span style={{ fontSize: 10, color: "#888" }}>
+                      Use edge switch
                     </span>
                   )}
                   <button

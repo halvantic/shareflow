@@ -313,24 +313,8 @@ async fn get_focus_state(state: tauri::State<'_, AppState>) -> Result<serde_json
 }
 
 #[tauri::command]
-async fn switch_focus_to(
-    state: tauri::State<'_, AppState>,
-    peer_id: String,
-) -> Result<(), String> {
-    let (entry_x, entry_y) = {
-        let peers = state.engine.peers.lock().await;
-        let peer = peers.get(&peer_id).ok_or("Peer not found")?;
-        let target_screen = peer.screens.first().ok_or("Peer has no screens")?;
-        (
-            target_screen.x + target_screen.width / 2,
-            target_screen.y + target_screen.height / 2,
-        )
-    };
-
-    // Use the same approach as edge switching: local state change only.
-    // No protocol messages — the remote will detect the switch through existing
-    // mechanisms (input events, connection state) the same way edge switching works.
-    state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
+async fn release_control(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.engine.switch_to_local().await;
     Ok(())
 }
 
@@ -1153,7 +1137,7 @@ pub fn run() {
             list_network_interfaces,
             get_peers,
             get_focus_state,
-            switch_focus_to,
+            release_control,
             switch_focus_local,
             set_neighbor,
             send_file_to_peer,

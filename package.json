@@ -1,7 +1,7 @@
 {
   "name": "shareflow",
   "private": true,
-  "version": "1.43.1",
+  "version": "1.43.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
