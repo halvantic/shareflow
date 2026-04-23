@@ -327,17 +327,10 @@ async fn switch_focus_to(
         )
     };
 
+    // Use the same approach as edge switching: local state change only.
+    // No protocol messages — the remote will detect the switch through existing
+    // mechanisms (input events, connection state) the same way edge switching works.
     state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
-
-    // Send SwitchFocus after suppression is active — this tells the remote
-    // that keyboard input is now expected. Sending before suppression caused
-    // race conditions on macOS; now the Windows side is already prepared.
-    let msg = crate::core::protocol::Message::SwitchFocus {
-        target_id: peer_id.clone(),
-        entry_x,
-        entry_y,
-    };
-    state.engine.send_to_peer(&peer_id, msg).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
