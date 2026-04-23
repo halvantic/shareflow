@@ -317,11 +317,12 @@ pub fn set_suppress(suppress: bool) {
     }
 }
 
-/// Adjust cursor visibility to the desired state. Blocks until complete or timeout.
+/// Adjust cursor visibility to the desired state. Blocks until complete or iteration limit.
 /// Must be called either in a blocking context (via block_in_place) or from sync code.
-/// Caps iterations to prevent infinite loops if cursor state is corrupted.
+/// Much higher iteration limit than previous version to allow for slow systems while still preventing infinite loops.
 fn adjust_cursor_visibility(suppress: bool) {
-    const MAX_ITERATIONS: u32 = 200;
+    const MAX_ITERATIONS: u32 = 10000;
+
     unsafe {
         if suppress {
             // Hide cursor: loop until counter goes negative (cursor actually hidden).
@@ -330,7 +331,7 @@ fn adjust_cursor_visibility(suppress: bool) {
                 iterations += 1;
             }
             if iterations >= MAX_ITERATIONS {
-                log::warn!("Cursor hide reached iteration limit (200) — state may be corrupted by accessibility tool or browser");
+                log::warn!("Cursor hide reached iteration limit (10000) — state may be stuck or corrupted by accessibility tool or browser");
             }
         } else {
             // Show cursor: loop until counter reaches non-negative (cursor actually visible).
@@ -339,7 +340,7 @@ fn adjust_cursor_visibility(suppress: bool) {
                 iterations += 1;
             }
             if iterations >= MAX_ITERATIONS {
-                log::warn!("Cursor show reached iteration limit (200) — state may be corrupted by accessibility tool or browser");
+                log::warn!("Cursor show reached iteration limit (10000) — state may be stuck or corrupted by accessibility tool or browser");
             }
         }
     }
