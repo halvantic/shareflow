@@ -317,28 +317,27 @@ async fn switch_focus_to(
     state: tauri::State<'_, AppState>,
     peer_id: String,
 ) -> Result<(), String> {
-    let peers = state.engine.peers.lock().await;
-    let peer = peers.get(&peer_id).ok_or("Peer not found")?;
-    let target_screen = peer.screens.first().ok_or("Peer has no screens")?;
-    let entry_x = target_screen.x + target_screen.width / 2;
-    let entry_y = target_screen.y + target_screen.height / 2;
+    let (entry_x, entry_y) = {
+        let peers = state.engine.peers.lock().await;
+        let peer = peers.get(&peer_id).ok_or("Peer not found")?;
+        let target_screen = peer.screens.first().ok_or("Peer has no screens")?;
+        (
+            target_screen.x + target_screen.width / 2,
+            target_screen.y + target_screen.height / 2,
+        )
+    };
 
+    state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
+
+    // Send SwitchFocus after suppression is active — this tells the remote
+    // that keyboard input is now expected. Sending before suppression caused
+    // race conditions on macOS; now the Windows side is already prepared.
     let msg = crate::core::protocol::Message::SwitchFocus {
         target_id: peer_id.clone(),
         entry_x,
         entry_y,
     };
-    peer.sender.send(msg).await.map_err(|e| e.to_string())?;
-    // Send an initial MouseMove so the Mac has cursor context before key events.
-    // Without this, CGEventPost keyboard injection can silently fail because
-    // macOS hasn't fully synced cursor/event state from the SwitchFocus warp.
-    let mouse_msg = crate::core::protocol::Message::MouseMove(
-        crate::core::protocol::MouseMoveEvent { x: entry_x, y: entry_y },
-    );
-    peer.sender.send(mouse_msg).await.map_err(|e| e.to_string())?;
-    drop(peers);
-
-    state.engine.switch_to_remote(&peer_id, entry_x, entry_y).await;
+    state.engine.send_to_peer(&peer_id, msg).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
