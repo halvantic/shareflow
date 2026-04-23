@@ -321,26 +321,50 @@ pub fn set_suppress(suppress: bool) {
 /// Must be called either in a blocking context (via block_in_place) or from sync code.
 /// Much higher iteration limit than previous version to allow for slow systems while still preventing infinite loops.
 fn adjust_cursor_visibility(suppress: bool) {
+    use std::time::Instant;
     const MAX_ITERATIONS: u32 = 10000;
 
+    let start = Instant::now();
     unsafe {
         if suppress {
             // Hide cursor: loop until counter goes negative (cursor actually hidden).
             let mut iterations = 0;
-            while ShowCursor(false) >= 0 && iterations < MAX_ITERATIONS {
+            loop {
+                let result = ShowCursor(false);
+                if result < 0 {
+                    // Cursor is hidden
+                    break;
+                }
                 iterations += 1;
+                if iterations >= MAX_ITERATIONS {
+                    let elapsed = start.elapsed().as_millis();
+                    log::warn!("Cursor hide reached iteration limit (10000) after {}ms, result={} — state may be stuck or corrupted", elapsed, result);
+                    break;
+                }
             }
-            if iterations >= MAX_ITERATIONS {
-                log::warn!("Cursor hide reached iteration limit (10000) — state may be stuck or corrupted by accessibility tool or browser");
+            let elapsed = start.elapsed().as_millis();
+            if iterations > 0 && iterations < MAX_ITERATIONS && elapsed > 100 {
+                log::debug!("Cursor hide completed after {} iterations and {}ms", iterations, elapsed);
             }
         } else {
             // Show cursor: loop until counter reaches non-negative (cursor actually visible).
             let mut iterations = 0;
-            while ShowCursor(true) < 0 && iterations < MAX_ITERATIONS {
+            loop {
+                let result = ShowCursor(true);
+                if result >= 0 {
+                    // Cursor is visible
+                    break;
+                }
                 iterations += 1;
+                if iterations >= MAX_ITERATIONS {
+                    let elapsed = start.elapsed().as_millis();
+                    log::warn!("Cursor show reached iteration limit (10000) after {}ms, result={} — state may be stuck or corrupted", elapsed, result);
+                    break;
+                }
             }
-            if iterations >= MAX_ITERATIONS {
-                log::warn!("Cursor show reached iteration limit (10000) — state may be stuck or corrupted by accessibility tool or browser");
+            let elapsed = start.elapsed().as_millis();
+            if iterations > 0 && iterations < MAX_ITERATIONS && elapsed > 100 {
+                log::debug!("Cursor show completed after {} iterations and {}ms", iterations, elapsed);
             }
         }
     }
