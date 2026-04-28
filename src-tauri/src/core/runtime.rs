@@ -188,6 +188,7 @@ pub fn start_event_bridge(
 ///
 /// On Windows the hook thread sends `()` whenever `WM_CLIPBOARDUPDATE` fires,
 /// replacing the need for a polling loop in `start_clipboard_sync`.
+#[allow(dead_code)]
 pub fn start_clipboard_change_bridge(
     std_rx: std::sync::mpsc::Receiver<()>,
 ) -> mpsc::Receiver<()> {

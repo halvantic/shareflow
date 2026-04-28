@@ -43,9 +43,9 @@ struct AppState {
 #[cfg(target_os = "macos")]
 fn macos_accessibility_trusted() -> bool {
     extern "C" {
-        fn AXIsProcessTrusted() -> u8;
+        fn AXIsProcessTrusted() -> bool;
     }
-    unsafe { AXIsProcessTrusted() != 0 }
+    unsafe { AXIsProcessTrusted() }
 }
 
 // --- Tauri Commands ---
@@ -736,7 +736,6 @@ fn build_tray_menu(
 fn setup_tray(app: &tauri::App, _engine: Arc<Engine>) -> Result<(), Box<dyn std::error::Error>> {
     let initial_menu = build_tray_menu(app.handle(), &[], &FocusState::Local, &[])?;
 
-    let app_handle = app.handle().clone();
     let _tray = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
             log::warn!("Default window icon not found, using empty icon");
