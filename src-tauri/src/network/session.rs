@@ -115,8 +115,7 @@ pub async fn run_peer_session(
         }
     });
 
-    // 4. Keepalive: ping every 5 s, disconnect after 6 consecutive missed pongs.
-    // (Increased threshold to tolerate tokio task scheduling delays when the app is backgrounded.)
+    // 4. Keepalive: ping every 5 s, disconnect after 3 consecutive missed pongs.
     let ping_tx = conn.outgoing.clone();
     let pong_received = Arc::new(AtomicBool::new(true));
     let pong_flag = Arc::clone(&pong_received);
@@ -126,9 +125,9 @@ pub async fn run_peer_session(
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             if !pong_flag.load(Ordering::SeqCst) {
                 missed += 1;
-                if missed >= 6 {
+                if missed >= 3 {
                     log::warn!(
-                        "Peer failed to respond to 6 consecutive pings, closing connection"
+                        "Peer failed to respond to 3 consecutive pings, closing connection"
                     );
                     break;
                 }
