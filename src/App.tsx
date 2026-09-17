@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import TitleBar from "./TitleBar";
 import "./App.css";
 
 interface ScreenInfo {
@@ -572,6 +573,7 @@ function App() {
 
   return (
     <div className="app">
+      <TitleBar />
       {/* Toast notifications */}
       <div className="toast-container">
         {toasts.map((t) => (
