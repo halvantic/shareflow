@@ -1,13 +1,95 @@
+/**
+ * ShareFlow theme.
+ *
+ * Aligned with the Ballast product/site palette so ShareFlow reads as a
+ * sibling product on halvantic.com rather than a one-off. Same self-hosted
+ * IBM Plex Sans/Mono files, same oklch token values (dark only here, since
+ * ShareFlow is a desktop app with no light-mode variant today).
+ */
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-600-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --ballast-bg: oklch(0.165 0.012 245);
+  --ballast-bg-1: oklch(0.195 0.012 245);
+  --ballast-bg-2: oklch(0.225 0.012 245);
+  --ballast-bg-3: oklch(0.265 0.013 245);
+  --ballast-panel: oklch(0.205 0.012 245);
+  --ballast-panel-2: oklch(0.235 0.012 245);
+  --ballast-border: oklch(0.31 0.012 245);
+  --ballast-border-2: oklch(0.4 0.013 245);
+  --ballast-text: oklch(0.965 0.004 245);
+  --ballast-text-2: oklch(0.78 0.008 245);
+  --ballast-muted: oklch(0.64 0.01 245);
+
+  --ballast-accent: oklch(0.72 0.105 205);
+  --ballast-accent-strong: oklch(0.66 0.115 205);
+  --ballast-accent-soft: oklch(0.72 0.105 205 / 0.14);
+  --ballast-accent-fg: oklch(0.16 0.03 230);
+
+  --ballast-ok: oklch(0.76 0.14 158);
+  --ballast-ok-soft: oklch(0.76 0.14 158 / 0.16);
+  --ballast-warn: oklch(0.82 0.13 82);
+  --ballast-warn-soft: oklch(0.82 0.13 82 / 0.16);
+  --ballast-crit: oklch(0.66 0.18 26);
+  --ballast-crit-soft: oklch(0.66 0.18 26 / 0.18);
+
+  --ballast-ink: oklch(0.12 0.012 245);
+  --ballast-disabled: oklch(0.32 0.012 245);
+  --ballast-hover: oklch(0.34 0.05 220);
+
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   font-weight: 400;
-  color: #e0e0e0;
-  background-color: #1a1a2e;
+  color: var(--ballast-text);
+  background-color: var(--ballast-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+code, pre, .log, .log-entry {
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
 }
 
 * {
@@ -46,21 +128,21 @@
 }
 
 .toast-info {
-  background: #16213e;
-  border: 1px solid #0f3460;
-  color: #58a6ff;
+  background: var(--ballast-panel);
+  border: 1px solid var(--ballast-border);
+  color: var(--ballast-accent);
 }
 
 .toast-success {
-  background: rgba(76, 175, 80, 0.15);
-  border: 1px solid #4caf50;
-  color: #4caf50;
+  background: var(--ballast-ok-soft);
+  border: 1px solid var(--ballast-ok);
+  color: var(--ballast-ok);
 }
 
 .toast-error {
-  background: rgba(244, 67, 54, 0.15);
-  border: 1px solid #f44336;
-  color: #f44336;
+  background: var(--ballast-crit-soft);
+  border: 1px solid var(--ballast-crit);
+  color: var(--ballast-crit);
 }
 
 @keyframes toast-in {
@@ -79,14 +161,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 20px;
-  background: #16213e;
-  border-bottom: 1px solid #0f3460;
+  background: var(--ballast-panel);
+  border-bottom: 1px solid var(--ballast-border);
 }
 
 .header h1 {
   font-size: 18px;
   font-weight: 600;
-  color: #e94560;
+  color: var(--ballast-accent);
 }
 
 .header-right {
@@ -100,41 +182,41 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #888;
+  color: var(--ballast-muted);
 }
 
 .quit-btn {
   background: transparent;
-  color: #888;
-  border: 1px solid #333;
+  color: var(--ballast-muted);
+  border: 1px solid var(--ballast-border);
   padding: 4px 10px;
   font-size: 11px;
 }
 
 .quit-btn:hover {
-  background: #f44336;
+  background: var(--ballast-crit);
   color: white;
-  border-color: #f44336;
+  border-color: var(--ballast-crit);
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4caf50;
+  background: var(--ballast-ok);
   flex-shrink: 0;
 }
 
 .status-dot.offline {
-  background: #f44336;
+  background: var(--ballast-crit);
 }
 
 .status-dot.connected {
-  background: #4caf50;
+  background: var(--ballast-ok);
 }
 
 .status-dot.remote {
-  background: #e94560;
+  background: var(--ballast-accent);
   animation: pulse 1s ease-in-out infinite;
 }
 
@@ -148,8 +230,8 @@
 /* Sidebar */
 .sidebar {
   width: 220px;
-  background: #16213e;
-  border-right: 1px solid #0f3460;
+  background: var(--ballast-panel);
+  border-right: 1px solid var(--ballast-border);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -157,29 +239,29 @@
 
 .sidebar-section {
   padding: 16px;
-  border-bottom: 1px solid #0f3460;
+  border-bottom: 1px solid var(--ballast-border);
 }
 
 .sidebar-section h3 {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: #666;
+  color: var(--ballast-muted);
   margin-bottom: 10px;
 }
 
 .machine-card {
   padding: 10px;
   margin-bottom: 6px;
-  background: #1a1a2e;
+  background: var(--ballast-bg);
   border-radius: 6px;
-  border: 1px solid #0f3460;
+  border: 1px solid var(--ballast-border);
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
 }
 
 .machine-card:hover {
-  border-color: #e94560;
+  border-color: var(--ballast-accent);
 }
 
 .machine-card .name {
@@ -189,22 +271,22 @@
 
 .machine-card .info {
   font-size: 11px;
-  color: #666;
+  color: var(--ballast-muted);
   margin-top: 2px;
 }
 
 .machine-card.self {
-  border-color: #e94560;
-  background: rgba(233, 69, 96, 0.08);
+  border-color: var(--ballast-accent);
+  background: var(--ballast-accent-soft);
 }
 
 .machine-card.discovered {
-  border-color: #0f3460;
+  border-color: var(--ballast-border);
   border-style: dashed;
 }
 
 .machine-card.discovered:hover {
-  border-color: #58a6ff;
+  border-color: var(--ballast-accent);
   border-style: solid;
 }
 
@@ -237,7 +319,7 @@
   font-size: 16px;
   font-weight: 600;
   margin-bottom: 12px;
-  color: #e94560;
+  color: var(--ballast-accent);
 }
 
 /* Connect form */
@@ -248,22 +330,22 @@
 }
 
 input[type="text"] {
-  background: #16213e;
-  border: 1px solid #0f3460;
+  background: var(--ballast-panel);
+  border: 1px solid var(--ballast-border);
   border-radius: 6px;
   padding: 8px 12px;
-  color: #e0e0e0;
+  color: var(--ballast-text);
   font-size: 13px;
   outline: none;
   transition: border-color 0.2s;
 }
 
 input[type="text"]:focus {
-  border-color: #e94560;
+  border-color: var(--ballast-accent);
 }
 
 button {
-  background: #e94560;
+  background: var(--ballast-accent);
   color: white;
   border: none;
   border-radius: 6px;
@@ -275,7 +357,7 @@ button {
 }
 
 button:hover {
-  background: #c73e54;
+  background: var(--ballast-accent-strong);
 }
 
 button:active {
@@ -283,17 +365,17 @@ button:active {
 }
 
 button:disabled {
-  background: #444;
+  background: var(--ballast-disabled);
   cursor: not-allowed;
   transform: none;
 }
 
 button.secondary {
-  background: #0f3460;
+  background: var(--ballast-border);
 }
 
 button.secondary:hover {
-  background: #1a4a7a;
+  background: var(--ballast-hover);
 }
 
 /* Screen arrangement */
@@ -303,16 +385,16 @@ button.secondary:hover {
   justify-content: center;
   gap: 4px;
   padding: 40px;
-  background: #16213e;
+  background: var(--ballast-panel);
   border-radius: 8px;
-  border: 1px solid #0f3460;
+  border: 1px solid var(--ballast-border);
   min-height: 200px;
 }
 
 .screen-box {
   width: 140px;
   height: 90px;
-  border: 2px solid #0f3460;
+  border: 2px solid var(--ballast-border);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -321,21 +403,21 @@ button.secondary:hover {
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s;
-  background: #1a1a2e;
+  background: var(--ballast-bg);
 }
 
 .screen-box:hover {
-  border-color: #e94560;
+  border-color: var(--ballast-accent);
 }
 
 .screen-box.active {
-  border-color: #e94560;
-  box-shadow: 0 0 12px rgba(233, 69, 96, 0.3);
+  border-color: var(--ballast-accent);
+  box-shadow: 0 0 12px var(--ballast-accent-soft);
 }
 
 .screen-box.peer {
   border-style: dashed;
-  border-color: #58a6ff;
+  border-color: var(--ballast-accent);
 }
 
 .screen-box .label {
@@ -350,16 +432,16 @@ button.secondary:hover {
 
 .screen-box .res {
   font-size: 10px;
-  color: #666;
+  color: var(--ballast-muted);
 }
 
 /* Edge switching config */
 .edge-config-block {
   margin-bottom: 16px;
   padding: 12px;
-  background: #16213e;
+  background: var(--ballast-panel);
   border-radius: 6px;
-  border: 1px solid #0f3460;
+  border: 1px solid var(--ballast-border);
 }
 
 .edge-config-label {
@@ -377,7 +459,7 @@ button.secondary:hover {
 
 .edge-monitor-name {
   font-size: 11px;
-  color: #888;
+  color: var(--ballast-muted);
   min-width: 120px;
   flex-shrink: 0;
 }
@@ -391,7 +473,7 @@ button.secondary:hover {
 }
 
 .info-grid .label {
-  color: #666;
+  color: var(--ballast-muted);
 }
 
 .info-grid .value {
@@ -400,42 +482,42 @@ button.secondary:hover {
 
 /* Log */
 .log {
-  background: #0d1117;
+  background: var(--ballast-ink);
   border-radius: 6px;
   padding: 12px;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   max-height: 200px;
   overflow-y: auto;
-  border: 1px solid #0f3460;
+  border: 1px solid var(--ballast-border);
 }
 
 .log-entry {
   padding: 2px 0;
-  color: #8b949e;
+  color: var(--ballast-muted);
 }
 
 .log-entry.info {
-  color: #58a6ff;
+  color: var(--ballast-accent);
 }
 
 .log-entry.success {
-  color: #4caf50;
+  color: var(--ballast-ok);
 }
 
 .log-entry.error {
-  color: #f44336;
+  color: var(--ballast-crit);
 }
 
 /* Focus banner */
 .focus-banner {
-  background: rgba(233, 69, 96, 0.15);
-  border: 1px solid #e94560;
+  background: var(--ballast-accent-soft);
+  border: 1px solid var(--ballast-accent);
   border-radius: 6px;
   padding: 10px 16px;
   margin-bottom: 16px;
   font-size: 13px;
-  color: #e94560;
+  color: var(--ballast-accent);
   text-align: center;
   animation: pulse 2s ease-in-out infinite;
 }
@@ -453,8 +535,8 @@ button.secondary:hover {
 }
 
 .transfer-item {
-  background: #16213e;
-  border: 1px solid #0f3460;
+  background: var(--ballast-panel);
+  border: 1px solid var(--ballast-border);
   border-radius: 6px;
   padding: 10px 12px;
 }
@@ -477,12 +559,12 @@ button.secondary:hover {
 
 .transfer-dir {
   font-size: 11px;
-  color: #888;
+  color: var(--ballast-muted);
 }
 
 .progress-bar {
   height: 6px;
-  background: #0d1117;
+  background: var(--ballast-ink);
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -490,28 +572,28 @@ button.secondary:hover {
 
 .progress-fill {
   height: 100%;
-  background: #e94560;
+  background: var(--ballast-accent);
   border-radius: 3px;
   transition: width 0.2s ease;
 }
 
 .transfer-info {
   font-size: 11px;
-  color: #666;
+  color: var(--ballast-muted);
 }
 
 .received-file {
   display: flex;
   justify-content: space-between;
   padding: 6px 10px;
-  background: #16213e;
+  background: var(--ballast-panel);
   border-radius: 4px;
   margin-bottom: 4px;
   font-size: 12px;
 }
 
 .received-name {
-  color: #4caf50;
+  color: var(--ballast-ok);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -519,15 +601,15 @@ button.secondary:hover {
 }
 
 .received-size {
-  color: #666;
+  color: var(--ballast-muted);
   flex-shrink: 0;
   margin-left: 12px;
 }
 
 /* Settings panel */
 .settings-panel {
-  background: #16213e;
-  border: 1px solid #0f3460;
+  background: var(--ballast-panel);
+  border: 1px solid var(--ballast-border);
   border-radius: 8px;
   padding: 20px;
 }
@@ -540,18 +622,18 @@ button.secondary:hover {
   display: block;
   font-size: 13px;
   font-weight: 500;
-  color: #e0e0e0;
+  color: var(--ballast-text);
   margin-bottom: 6px;
 }
 
 .settings-hint {
   font-size: 11px;
-  color: #666;
+  color: var(--ballast-muted);
   margin-left: 8px;
 }
 
 .settings-panel input[type="checkbox"] {
-  accent-color: #e94560;
+  accent-color: var(--ballast-accent);
   width: 16px;
   height: 16px;
   cursor: pointer;
@@ -569,21 +651,21 @@ button.secondary:hover {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: #1a1a2e;
-  border: 1px solid #0f3460;
+  background: var(--ballast-bg);
+  border: 1px solid var(--ballast-border);
   border-radius: 6px;
 }
 
 .trusted-host-name {
   font-size: 13px;
   font-weight: 500;
-  color: #4caf50;
+  color: var(--ballast-ok);
   margin-right: 10px;
 }
 
 .trusted-host-id {
   font-size: 11px;
-  color: #666;
+  color: var(--ballast-muted);
   font-family: "JetBrains Mono", monospace;
 }
 
