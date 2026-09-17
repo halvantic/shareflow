@@ -598,7 +598,7 @@ function App() {
                   flex: 1,
                   padding: "16px 14px",
                   borderRadius: 8,
-                  border: `2px solid ${wizardMode === "host" ? "#e94560" : "#333"}`,
+                  border: `2px solid ${wizardMode === "host" ? "var(--ballast-accent)" : "var(--ballast-border)"}`,
                   cursor: "pointer",
                   background: wizardMode === "host" ? "rgba(233,69,96,0.08)" : "#1a1a2e",
                   transition: "border-color 0.15s",
@@ -606,7 +606,7 @@ function App() {
               >
                 <div style={{ fontSize: 28, marginBottom: 8 }}>🖥️</div>
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Host</div>
-                <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+                <div style={{ fontSize: 12, color: "var(--ballast-muted)", lineHeight: 1.5 }}>
                   Full app. Owns settings, controls connected agents. Use this on your main machine.
                 </div>
               </div>
@@ -618,7 +618,7 @@ function App() {
                   flex: 1,
                   padding: "16px 14px",
                   borderRadius: 8,
-                  border: `2px solid ${wizardMode === "agent" ? "#e94560" : "#333"}`,
+                  border: `2px solid ${wizardMode === "agent" ? "var(--ballast-accent)" : "var(--ballast-border)"}`,
                   cursor: "pointer",
                   background: wizardMode === "agent" ? "rgba(233,69,96,0.08)" : "#1a1a2e",
                   transition: "border-color 0.15s",
@@ -626,7 +626,7 @@ function App() {
               >
                 <div style={{ fontSize: 28, marginBottom: 8 }}>📡</div>
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Agent</div>
-                <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+                <div style={{ fontSize: 12, color: "var(--ballast-muted)", lineHeight: 1.5 }}>
                   Minimal mode. Follows host settings automatically. Use this on secondary machines.
                 </div>
               </div>
@@ -714,7 +714,10 @@ function App() {
 
       {/* Header */}
       <div className="header">
-        <h1>ShareFlow {appVersion && <span style={{ fontSize: 12, fontWeight: 400, color: '#888' }}>v{appVersion}</span>} {config?.agent_mode && <span style={{ fontSize: 11, fontWeight: 500, color: '#e94560', background: 'rgba(233,69,96,0.15)', padding: '2px 8px', borderRadius: 4 }}>Agent</span>} <span style={{ fontSize: 10, fontWeight: 400, color: '#666' }}>by Joshua Fourie</span></h1>
+        <h1 className="brand-title">
+          <img src="/shareflow-logo.png" alt="ShareFlow" className="brand-logo" />
+          ShareFlow {appVersion && <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--ballast-muted)' }}>v{appVersion}</span>} {config?.agent_mode && <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--ballast-accent)', background: 'var(--ballast-accent-soft)', padding: '2px 8px', borderRadius: 4 }}>Agent</span>} <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--ballast-muted)' }}>by Halvantic</span>
+        </h1>
         <div className="header-right">
           <div className="status">
             <span
@@ -794,12 +797,12 @@ function App() {
                   {remotePeerId === peer.id ? (
                     <button
                       onClick={handleReleaseControl}
-                      style={{ fontSize: 10, padding: "3px 6px", backgroundColor: "#e94560" }}
+                      style={{ fontSize: 10, padding: "3px 6px", backgroundColor: "var(--ballast-accent)" }}
                     >
                       Release Control
                     </button>
                   ) : (
-                    <span style={{ fontSize: 10, color: "#888" }}>
+                    <span style={{ fontSize: 10, color: "var(--ballast-muted)" }}>
                       Use edge switch
                     </span>
                   )}
@@ -834,7 +837,7 @@ function App() {
                       Connect
                     </button>
                     {config?.trusted_hosts?.some((h) => h.peer_id === d.id) ? (
-                      <span style={{ fontSize: 10, color: "#4caf50" }}>Trusted</span>
+                      <span style={{ fontSize: 10, color: "var(--ballast-ok)" }}>Trusted</span>
                     ) : (
                       <button
                         className="secondary"
@@ -856,7 +859,7 @@ function App() {
             <div style={{ fontSize: 11, color: "#777", lineHeight: 1.8 }}>
               <div>
                 Focus:{" "}
-                <span style={{ color: isRemote ? "#e94560" : "#4caf50" }}>
+                <span style={{ color: isRemote ? "var(--ballast-accent)" : "var(--ballast-ok)" }}>
                   {isRemote ? "Remote" : "Local"}
                 </span>
               </div>
@@ -883,11 +886,11 @@ function App() {
 
               {config?.agent_mode && (
                 <div style={{ marginBottom: 16, padding: "10px 14px", background: "rgba(233,69,96,0.08)", border: "1px solid rgba(233,69,96,0.3)", borderRadius: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "#e94560", marginBottom: 4 }}>Agent Mode</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ballast-accent)", marginBottom: 4 }}>Agent Mode</div>
                   <div style={{ fontSize: 12, color: "#aaa" }}>
                     This machine is running as an agent. Settings like clipboard sync are pushed by the host.
                   </div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
+                  <div style={{ fontSize: 12, color: "var(--ballast-muted)", marginTop: 6 }}>
                     Host: <span style={{ color: "#ccc" }}>{config.host_address || "not set"}</span>
                   </div>
                 </div>
@@ -1005,7 +1008,7 @@ function App() {
 
               {/* Intel AMT - Remote Power Control */}
               <div style={{ marginTop: 20, borderTop: "1px solid #0f3460", paddingTop: 20 }}>
-                <h3 style={{ fontSize: 14, color: "#e94560", marginBottom: 10 }}>
+                <h3 style={{ fontSize: 14, color: "var(--ballast-accent)", marginBottom: 10 }}>
                   Intel AMT - Remote Power Control
                 </h3>
                 <p className="settings-hint" style={{ marginBottom: 10 }}>
@@ -1085,10 +1088,10 @@ function App() {
                         alignItems: "center",
                       }}>
                         <div>
-                          <div style={{ fontSize: 12, fontWeight: "bold", color: "#e94560" }}>
+                          <div style={{ fontSize: 12, fontWeight: "bold", color: "var(--ballast-accent)" }}>
                             {computer.name}
                           </div>
-                          <div style={{ fontSize: 11, color: "#888" }}>
+                          <div style={{ fontSize: 11, color: "var(--ballast-muted)" }}>
                             {computer.host}:{computer.port}
                           </div>
                         </div>
@@ -1099,7 +1102,7 @@ function App() {
                             style={{
                               fontSize: 10,
                               padding: "3px 8px",
-                              backgroundColor: amtPoweringOn === computer.id ? "#666" : "#e94560",
+                              backgroundColor: amtPoweringOn === computer.id ? "var(--ballast-muted)" : "var(--ballast-accent)",
                               cursor: amtPoweringOn === computer.id ? "default" : "pointer",
                               opacity: amtPoweringOn === computer.id ? 0.7 : 1,
                             }}
@@ -1124,7 +1127,7 @@ function App() {
 
               {/* Trusted Hosts */}
               <div style={{ marginTop: 20 }}>
-                <h3 style={{ fontSize: 14, color: "#e94560", marginBottom: 10 }}>
+                <h3 style={{ fontSize: 14, color: "var(--ballast-accent)", marginBottom: 10 }}>
                   Trusted Hosts
                 </h3>
                 <p className="settings-hint" style={{ marginBottom: 10 }}>
@@ -1157,7 +1160,7 @@ function App() {
                 {/* Add connected peers to trusted list */}
                 {peers.length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <span style={{ fontSize: 12, color: "#888" }}>Add connected peer:</span>
+                    <span style={{ fontSize: 12, color: "var(--ballast-muted)" }}>Add connected peer:</span>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                       {peers
                         .filter((p) => !config?.trusted_hosts?.some((h) => h.peer_id === p.id))
@@ -1201,7 +1204,7 @@ function App() {
                     {s.width}x{s.height}
                   </div>
                   {s.primary && (
-                    <div className="res" style={{ color: "#e94560" }}>
+                    <div className="res" style={{ color: "var(--ballast-accent)" }}>
                       Primary
                     </div>
                   )}
@@ -1220,7 +1223,7 @@ function App() {
           {peers.length > 0 && !config?.agent_mode && (
             <div className="section">
               <h2>Edge Switching</h2>
-              <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+              <p style={{ fontSize: 12, color: "var(--ballast-muted)", marginBottom: 12 }}>
                 Assign a peer to a screen edge. Move your mouse to that edge
                 to switch control.
                 {screens.length > 1 &&
@@ -1328,7 +1331,7 @@ function App() {
               {receivedFiles.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <h3
-                    style={{ fontSize: 13, color: "#888", marginBottom: 8 }}
+                    style={{ fontSize: 13, color: "var(--ballast-muted)", marginBottom: 8 }}
                   >
                     Received Files
                   </h3>
@@ -1377,8 +1380,8 @@ function App() {
                   marginTop: 8,
                   fontSize: 12,
                   color: connectStatus.startsWith("Error")
-                    ? "#f44336"
-                    : "#4caf50",
+                    ? "var(--ballast-crit)"
+                    : "var(--ballast-ok)",
                 }}
               >
                 {connectStatus}
@@ -1401,7 +1404,7 @@ function App() {
               <span className="label">Focus</span>
               <span
                 className="value"
-                style={{ color: isRemote ? "#e94560" : "#4caf50" }}
+                style={{ color: isRemote ? "var(--ballast-accent)" : "var(--ballast-ok)" }}
               >
                 {isRemote
                   ? `Remote (${remotePeerId?.slice(0, 8)}...)`
