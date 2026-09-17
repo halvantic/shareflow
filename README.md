@@ -2,7 +2,7 @@
 
 A software KVM that lets you share one keyboard and mouse across multiple PCs on your local network. Move your cursor to the edge of a screen and it seamlessly transitions to the next machine — no hardware switch required.
 
-![ShareFlow Main UI](https://raw.githubusercontent.com/JoshuaFourie/shareflow-kvm/main/Main.jpg)
+![ShareFlow Main UI](docs/screenshot.png)
 
 ---
 
