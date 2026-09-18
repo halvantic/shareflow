@@ -284,15 +284,22 @@ impl Engine {
         crate::input::init_remote_mouse(entry_x, entry_y, rs_x, rs_y, rs_w, rs_h);
         crate::diag(format!("Focus → remote {}", &peer_id[..peer_id.len().min(8)]));
 
-        // Push our local clipboard to the remote peer immediately so that Ctrl+V
-        // on the remote machine uses our clipboard content rather than its own.
-        if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
-            let msg = crate::core::protocol::clipboard_to_message(content);
-            let peers = self.peers.lock().await;
-            if let Some(peer) = peers.get(peer_id) {
-                let _ = peer.sender_lo.send(msg).await;
+        // Push our local clipboard to the remote peer so that Ctrl+V on the
+        // remote machine uses our clipboard content rather than its own.
+        // Spawned off the critical path: reading the clipboard and sending it
+        // is not needed for the cursor injection the remote side is about to
+        // do, and shouldn't delay the switch itself.
+        let peers_ref = self.peers.clone();
+        let peer_id_owned = peer_id.to_string();
+        tokio::spawn(async move {
+            if let Some(content) = crate::clipboard::sync::get_clipboard_content() {
+                let msg = crate::core::protocol::clipboard_to_message(content);
+                let peers = peers_ref.lock().await;
+                if let Some(peer) = peers.get(&peer_id_owned) {
+                    let _ = peer.sender_lo.send(msg).await;
+                }
             }
-        }
+        });
 
         let _ = self
             .ui_events

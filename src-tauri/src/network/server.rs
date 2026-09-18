@@ -41,6 +41,11 @@ pub async fn start_server(
             Ok((tcp_stream, addr)) => {
                 log::info!("Incoming connection from {}", addr);
 
+                // Disable Nagle's algorithm: focus-switch and input events are
+                // small, latency-sensitive packets, and Nagling can hold them
+                // back tens of ms waiting to coalesce with more data.
+                let _ = tcp_stream.set_nodelay(true);
+
                 let acceptor = acceptor.clone();
                 let engine = engine.clone();
                 let peer_id = peer_id.clone();

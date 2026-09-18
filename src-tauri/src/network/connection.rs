@@ -221,6 +221,11 @@ pub async fn connect_to_peer(
     .map_err(|_| format!("Connection timed out after 10 seconds"))?
     .map_err(|e| format!("TCP connect failed: {}", e))?;
 
+    // Disable Nagle's algorithm: focus-switch and input events are small,
+    // latency-sensitive packets, and Nagling can hold them back tens of ms
+    // waiting to coalesce with more data.
+    let _ = stream.set_nodelay(true);
+
     let server_name = rustls::pki_types::ServerName::try_from("shareflow.local")
         .map_err(|e| format!("Invalid server name: {}", e))?;
 
