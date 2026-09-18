@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "shareflow"
-version = "1.43.6"
+version = "1.43.7"
 dependencies = [
  "aes-gcm",
  "arboard",

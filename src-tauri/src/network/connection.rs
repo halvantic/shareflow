@@ -65,6 +65,12 @@ impl PeerConnection {
                         Err(_) => break,
                     }
                 }
+                // TLS streams may buffer written plaintext internally rather than
+                // pushing it to the socket immediately — flush so hi-priority
+                // messages (mouse/key/focus) actually hit the wire without delay.
+                if count > 0 && writer.flush().await.is_err() {
+                    return;
+                }
 
                 // Biased select: prefer hi, fall back to lo.
                 tokio::select! {
@@ -73,6 +79,9 @@ impl PeerConnection {
                         match msg {
                             Some(m) => {
                                 if write_message(&mut writer, &m).await.is_err() {
+                                    return;
+                                }
+                                if writer.flush().await.is_err() {
                                     return;
                                 }
                             }
