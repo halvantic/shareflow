@@ -8,12 +8,11 @@ export default function TitleBar() {
 
   useEffect(() => {
     appWindow.isMaximized().then(setIsMaximized);
-    const unlisten = appWindow.onResized(() => {
-      appWindow.isMaximized().then(setIsMaximized);
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
+    // Note: deliberately not re-querying isMaximized() on every resize.
+    // On macOS, an undecorated window's isMaximized() call rebuilds the
+    // window's theme frame to compute the answer, which itself fires a
+    // resize notification — querying it here would recurse into an
+    // infinite loop that pins the main thread and blocks all window input.
   }, []);
 
   return (
