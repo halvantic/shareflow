@@ -26,3 +26,10 @@ dist-ssr
 *.sln
 *.sw?
 src-tauri/Cargo.lock
+.vscode
+.claude
+.gitattributes
+BUGS.md
+check_crash.ps1
+ISSUES.md
+kext
