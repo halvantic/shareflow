@@ -7,7 +7,6 @@
 [![Rust](https://img.shields.io/badge/Rust-1.77%2B-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-blue?style=for-the-badge&logo=tauri)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react)](https://react.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![GitHub Stars](https://img.shields.io/github/stars/halvantic/shareflow?style=social)](https://github.com/halvantic/shareflow)
 
 <p align="center">
@@ -18,12 +17,10 @@
   <a href="#-installation--building">Installation</a> •
   <a href="#-security--networking">Security</a> •
   <a href="#-project-structure">Project Structure</a> •
-  <a href="#-contributing">Contributing</a> •
-  <a href="#-license">License</a>
+  <a href="#-contributing">Contributing</a>
 </p>
 
-<!-- Optional: Add a demo GIF or screenshot below once available -->
-<!-- ![ShareFlow Demo](https://raw.githubusercontent.com/halvantic/shareflow/main/docs/demo.gif) -->
+![ShareFlow screenshot](docs/screenshot.png)
 
 </div>
 
@@ -41,12 +38,13 @@ Move your cursor to the edge of your screen, and it seamlessly transitions to th
 
 - **🎯 Directional Edge Switching:** Push the cursor to any screen edge to transfer focus to the next machine. Includes a 45° directional gate to prevent accidental triggers during horizontal dragging.
 - **📋 Automatic Clipboard Sync:** Text and image clipboard content transfers automatically when focus switches.
-- **📁 Drag-and-Drop File Transfer:** Stream files directly across machines with chunked network transfers.
+- **📁 File Transfer:** Pick a file to send to a discovered peer; it streams directly across machines with chunked network transfers.
 - **🔍 Zero-Config LAN Discovery:** Peers appear automatically on your subnet using local UDP discovery.
-- **🔒 Encrypted Traffic:** All TCP communication is encrypted using TLS with Trust-On-First-Use (TOFU) certificate pinning.
+- **🔒 Encrypted Traffic:** All TCP communication is encrypted using TLS with Trust-On-First-Use (TOFU) certificate pinning, plus optional HMAC-based pairing-code authentication for the connection handshake.
 - **📐 Multi-Monitor Proportional Mapping:** Accurately maps cursor position across displays of different sizes and resolutions.
-- **⌨️ Hardware Hotkey Return:** Press `Scroll Lock` at any time to snap control back to the local host.
-- **🖥️ Cross-Platform Support:** Primary controller on Windows, peer support on macOS, with Linux support in development.
+- **⌨️ Configurable Hotkey Return:** Press a hotkey combo (`Scroll Lock` by default) at any time to snap control back to the local host.
+- **⚡ Remote Power-On:** Wake a configured peer over the network via Intel AMT (WS-Management/Digest Auth), directly from the tray menu or UI.
+- **🖥️ Cross-Platform Support:** Primary controller on Windows, peer support on macOS. Linux input capture/injection is currently a stub and not yet functional.
 
 ---
 
@@ -146,6 +144,8 @@ ShareFlow is designed for private local networks.
 
 - **Replay Protection:** Discovery broadcasts are timestamped and expire after 30 seconds.
 - **TOFU Pinning:** Peer certificates are stored on first connection and verified continuously.
+- **Optional Pairing Code:** If a pairing code is configured, new connections must complete an HMAC-SHA256 challenge/response before the session is accepted.
+- **Rate Limiting:** Incoming input events are token-bucket limited (200/sec sustained, burst 50) to bound abuse from a misbehaving or malicious peer.
 
 ---
 
@@ -167,26 +167,31 @@ shareflow/
     └── src/
         ├── core/
         │   ├── engine.rs       # Focus state machine, edge switching logic
+        │   ├── runtime.rs      # Event loop wiring engine, input, and clipboard together
         │   ├── screen.rs       # Edge detection, boundary validation
         │   ├── protocol.rs     # Message types, encode/decode
         │   ├── config.rs       # App configuration, neighbor layout
-        │   └── hotkey.rs       # Scroll Lock hotkey detection
+        │   └── hotkey.rs       # Configurable hotkey detection (default: Scroll Lock)
         ├── input/
         │   ├── windows.rs      # Windows low-level hooks (capture + injection)
         │   ├── macos.rs        # macOS CGEventTap (capture + injection)
-        │   └── linux.rs        # Linux (experimental)
+        │   └── linux.rs        # Linux (stub, not yet functional)
         ├── network/
         │   ├── discovery.rs    # UDP LAN broadcast discovery
         │   ├── server.rs       # TLS TCP server, message routing
+        │   ├── session.rs      # Per-connection session loop, input rate limiting
         │   ├── connection.rs   # Framed message reader/writer
+        │   ├── auth.rs         # HMAC pairing-code challenge/response
         │   └── tls.rs          # Certificate generation and pinning
         ├── clipboard/
         │   └── sync.rs         # Clipboard monitoring and sync
         ├── file_transfer/
         │   ├── sender.rs       # Chunked streaming file sender
         │   └── receiver.rs     # File receiver with bounds checking
+        ├── amt/
+        │   └── ipmi.rs         # Intel AMT remote power-on (WS-Management/Digest Auth)
         ├── credentials.rs      # Stored identity and trust state
-        ├── lib.rs              # Library exports
+        ├── lib.rs              # Library exports, Tauri commands
         └── main.rs             # Tauri app entrypoint
 ```
 
@@ -214,9 +219,5 @@ Contributions are welcome. Please feel free to open an issue or submit a pull re
 5. Open a pull request.
 
 ---
-
-## 📄 License
-
-Distributed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 Enjoying ShareFlow? Give it a ⭐ on GitHub to support development.
